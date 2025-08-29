@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Distribution / packaging
+dist/
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+*.exe~
+*.msi~
+
+# Application specific - Keep folders but not contents
+input_images/*
+!input_images/.gitkeep
+!input_images/README_ADD_IMAGES_HERE.txt
+resized_images/*
+!resized_images/.gitkeep
+temp_cr3/
+
+# User settings (local only)
+.terminallyquick_recent.json
+
+# Logs
+*.log
+session_file_*.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
