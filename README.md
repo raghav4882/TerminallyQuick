@@ -220,7 +220,7 @@ MIT License - see LICENSE file for details.
 
 ## 👨‍💻 Author
 
-**Daedraheart** - Image processing enthusiast and developer
+**Daedraheart** - Website developer, Game Designer and a serious task management app enthusiast (for a day). 
 
 ## 🐛 Issues & Support
 
@@ -235,7 +235,7 @@ If you encounter any issues:
 ## 🚀 Changelog
 
 ### v2.0 - Enhanced UX Edition
-- **🚀 Three Usage Modes**: Quick (presets), Expert (full control)
+- **🚀 Two Usage Modes**: Quick (presets), Expert (full control)
 - **📏 Progress Tracking**: Real-time progress bars with ETA calculations
 - **⚠️ Smart Warnings**: Large batch detection, image size analysis
 - **🖼️ Preview Mode**: See changes before processing
