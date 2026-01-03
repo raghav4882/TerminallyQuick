@@ -1,5 +1,17 @@
-__version__ = "2.0"
-__author__ = "Daedraheart"
+#!/usr/bin/env python3
+
+"""
+TerminallyQuick v3.0
+Professional Image Optimization Suite
+"""
+
+__version__ = "3.0"
+__author__ = "TerminallyQuick Team"
+
+# Define profile directory
+PROFILES_DIR = 'profiles'
+if not os.path.exists(PROFILES_DIR):
+    os.makedirs(PROFILES_DIR, exist_ok=True)
 
 from PIL import Image, ExifTags
 import os
@@ -9,8 +21,23 @@ from colorama import init, Fore, Style
 import shutil, textwrap
 import sys
 import platform
+import json
+import concurrent.futures
+import threading
 
-# === Cross-platform file opener ===
+# functionality for HEIC support
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass  # gracefully handle if not installed (though it should be)
+
+# Check for exiftool (required for CR3 support)
+HAS_EXIFTOOL = shutil.which("exiftool") is not None
+
+init(autoreset=True)
+
+# === Helper Functions ===
 def open_file_cross_platform(path):
     if platform.system() == "Darwin":
         os.system(f'open "{path}"')
@@ -19,21 +46,235 @@ def open_file_cross_platform(path):
     elif platform.system() == "Linux":
         os.system(f'xdg-open "{path}"')
     else:
-        print(f"{Fore.RED}⚠️ Unsupported OS. Please open the file manually: {path}")
+        print(f"{Fore.RED}[!] Unsupported OS. Please open the file manually: {path}")
 
-# Check for exiftool (required for CR3 support)
-HAS_EXIFTOOL = shutil.which("exiftool") is not None
+def view_most_recent_log():
+    """Find and open the most recent processing log"""
+    if not os.path.exists('resized_images'):
+        print(f"{Fore.RED}[!] No logs found yet. Process some images first!")
+        return
 
-init(autoreset=True)
+    # Find all run folders
+    runs = [d for d in os.listdir('resized_images') if d.startswith("run") and os.path.isdir(os.path.join('resized_images', d))]
+    if not runs:
+        print(f"{Fore.RED}[!] No processing sessions found.")
+        return
 
-term_width = shutil.get_terminal_size().columns
+    # Sort by modification time to get the latest
+    runs.sort(key=lambda x: os.path.getmtime(os.path.join('resized_images', x)), reverse=True)
+    latest_run = runs[0]
+    
+    # Try to find the summary text file first
+    run_path = os.path.join('resized_images', latest_run)
+    try:
+        summary_files = [f for f in os.listdir(run_path) if f.endswith("_summary.txt")]
+        
+        if summary_files:
+            log_path = os.path.join(run_path, summary_files[0])
+            print(f"{Fore.GREEN}[INFO] Opening latest log: {log_path}")
+            open_file_cross_platform(log_path)
+        else:
+            # Fallback to json if txt not found
+            json_files = [f for f in os.listdir(run_path) if f.endswith(".json")]
+            if json_files:
+                log_path = os.path.join(run_path, json_files[0])
+                print(f"{Fore.GREEN}[INFO] Opening latest log: {log_path}")
+                open_file_cross_platform(log_path)
+            else:
+                print(f"{Fore.RED}[!] No log files found in the latest session folder.")
+    except Exception as e:
+        print(f"{Fore.RED}[!] Error accessing log files: {str(e)}")
 
-# === Step Header and State Print Functions ===
-def print_step_header(_, title):
-    print(Fore.CYAN + f"🔧 {title}")
+def show_help_screen():
+    """Display a comprehensive help screen"""
+    print(f"\n{Fore.CYAN}{Style.BRIGHT}╔══════════════════════════════════════════════════════════╗")
+    print(f"║                 TerminallyQuick Help                     ║")
+    print(f"╚══════════════════════════════════════════════════════════╝{Style.RESET_ALL}")
+    
+    print(f"\n{Fore.YELLOW}KEYBOARD SHORTCUTS:{Style.RESET_ALL}")
+    print("  [Q] Quit        - Exit the application at any time")
+    print("  [L] Logs        - Open the most recent processing report")
+    print("  [H] Help        - Show this help screen")
+    print("  [B] Back        - Return to the previous menu")
+    print("  [C] Change Path - Switch input folder (at start)")
+    print("  [T] Test Run    - Process only the first image to check quality")
+    print("  [Enter] Default - Use the suggested or default value")
+    
+    print(f"\n{Fore.CYAN}FOLDER STRUCTURE:{Style.RESET_ALL}")
+    print("  • /input_images/   - Place your original files here")
+    print("  • /resized_images/ - Your processed images will appear here")
+    print("  • /profiles/       - Your custom setting presets")
+    
+    print(f"\n{Fore.GREEN}MODES:{Style.RESET_ALL}")
+    print("  • Manual Config - Full control over every setting")
+    print("  • Smart Mode    - Auto-suggestion based on analysis")
+    print("  • Fast Track    - Use your saved profiles for one-click processing")
+    print("  • Import        - Load settings from a JSON file")
+    
+    print(f"\n{Fore.MAGENTA}PRO TIPS:{Style.RESET_ALL}")
+    print("  • Saved Profiles: Create them via [P] to skip all prompts next time.")
+    print("  • Drag & Drop: Drag any folder into the terminal when changing paths.")
+    print("  • Test First: Use [T] to verify quality before a 1000+ image batch.")
+    print("  • Modern Formats: WEBP and AVIF offer 30-50% smaller files")
+    print("  • Quality: 85 is usually the sweet spot for web performance")
+    print("  • Upscaling: Keep 'No' to avoid blurry/pixelated images")
+    
+    input(f"\n{Fore.YELLOW}Press Enter to return...{Style.RESET_ALL}")
 
-def print_current_selections(format=None, size=None, quality=None, aspect=None, anchor=None):
+def import_settings_from_json():
+    """Import settings part from a processing_settings.json file"""
+    try:
+        from tkinter import Tk
+        import tkinter.filedialog as fd
+        root = Tk()
+        root.withdraw()
+        path = fd.askopenfilename(
+            title="Select processing_settings.json",
+            filetypes=[("JSON files", "*.json")]
+        )
+        root.destroy()
+    except Exception:
+        print(f"{Fore.YELLOW}[INFO] GUI picker not available. Manual entry required.")
+        path = input(f"{Fore.CYAN}Enter path to JSON file: {Style.RESET_ALL}").strip().strip("'").strip('"')
+    
+    if not path: return None
+    
+    try:
+        with open(path, 'r') as f:
+            data = json.load(f)
+        
+        # Determine if it's a full log or a profile
+        if "settings" in data:
+            settings = data["settings"]
+            name = data.get("profile_name", settings.get("name", "Imported"))
+            print(f"{Fore.GREEN}[OK] Imported settings: {name}")
+            return settings
+        else:
+            print(f"{Fore.RED}[!] Invalid settings format in JSON.")
+    except Exception as e:
+        print(f"{Fore.RED}[!] Could not import settings: {str(e)}")
+        
+    return None
+
+def get_file_size_kb(path):
+    return os.path.getsize(path) // 1024
+
+def setup_logging(output_folder, settings, version_mode):
+    """Setup detailed logging for the session"""
+    log_data = {
+        "session": {
+            "timestamp": datetime.now().isoformat(),
+            "version_mode": version_mode,
+            "settings": settings,
+            "output_folder": output_folder
+        },
+        "processing": {
+            "images": [],
+            "stats": {
+                "total_processed": 0,
+                "total_skipped": 0,
+                "upscaled_count": 0,
+                "downscaled_count": 0,
+                "kept_original_size": 0
+            }
+        }
+    }
+    
+    # Save settings JSON
+    settings_path = os.path.join(output_folder, "processing_settings.json")
+    with open(settings_path, 'w') as f:
+        json.dump(log_data, f, indent=2)
+    
+    return log_data, settings_path
+
+def log_image_processing(log_data, filename, original_size, final_size, action, file_size_kb, variant_name=""):
+    """Log detailed information about each image processed"""
+    image_log = {
+        "filename": filename,
+        "variant": variant_name,
+        "original_size": original_size,
+        "final_size": final_size,
+        "action": action,
+        "file_size_kb": file_size_kb,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    log_data["processing"]["images"].append(image_log)
+    
+    # Update stats
+    stats = log_data["processing"]["stats"]
+    if action == "upscaled":
+        stats["upscaled_count"] += 1
+    elif action == "downscaled":
+        stats["downscaled_count"] += 1
+    elif action == "kept_original":
+        stats["kept_original_size"] += 1
+    
+    stats["total_processed"] += 1
+
+def save_final_log(log_data, settings_path, processing_time, total_input_mb, total_output_size):
+    """Save final processing log with complete stats"""
+    log_data["session"]["processing_time_seconds"] = processing_time
+    log_data["session"]["total_input_mb"] = total_input_mb
+    log_data["session"]["total_output_kb"] = total_output_size
+    log_data["session"]["compression_ratio"] = (total_input_mb * 1024 / total_output_size) if total_output_size > 0 else 0
+    
+    with open(settings_path, 'w') as f:
+        json.dump(log_data, f, indent=2)
+    
+    # Also create a readable summary
+    summary_path = settings_path.replace('.json', '_summary.txt')
+    with open(summary_path, 'w') as f:
+        f.write(f"TerminallyQuick Processing Summary\n")
+        f.write(f"{'='*50}\n\n")
+        f.write(f"Session: {log_data['session']['timestamp']}\n")
+        f.write(f"Mode: {log_data['session']['version_mode']}\n")
+        f.write(f"Preset: {log_data['session']['settings']['name']}\n")
+        f.write(f"Format: {log_data['session']['settings']['format']}\n")
+        f.write(f"Target Size: {log_data['session']['settings']['size']}px\n")
+        f.write(f"Quality: {log_data['session']['settings']['quality']}%\n")
+        f.write(f"Upscaling: {'Enabled' if log_data['session']['settings'].get('allow_upscale') else 'Disabled'}\n")
+        f.write(f"Processing Time: {processing_time}s\n\n")
+        
+        stats = log_data['processing']['stats']
+        f.write(f"Processing Stats:\n")
+        f.write(f"  Total Processed: {stats['total_processed']}\n")
+        f.write(f"  Upscaled: {stats['upscaled_count']}\n")
+        f.write(f"  Downscaled: {stats['downscaled_count']}\n")
+        f.write(f"  Kept Original: {stats['kept_original_size']}\n\n")
+        
+        f.write(f"Individual Image Details:\n")
+        for img in log_data['processing']['images']:
+            variant_info = f" ({img['variant']})" if img['variant'] else ""
+            f.write(f"  {img['filename']}{variant_info}:\n")
+            f.write(f"    {img['original_size']} → {img['final_size']} | {img['action']} | {img['file_size_kb']} KB\n")
+
+def get_resize_action_and_emoji(original_short_edge, target_size, allow_upscale):
+    """Determine what action will be taken and appropriate emoji/description"""
+    if original_short_edge > target_size:
+        return "downscaled", "(-)", "Downscaled"
+    elif original_short_edge < target_size and allow_upscale:
+        return "upscaled", "(+)", "Upscaled"
+    else:
+        return "kept_original", "(=)", "Kept original size"
+
+def generate_web_friendly_filename(original_name, settings, timestamp):
+    """Generate SEO-friendly filenames"""
+    base = os.path.splitext(original_name)[0]
+    clean_base = "".join(c.lower() if c.isalnum() else "_" for c in base)
+    clean_base = clean_base.strip("_")
+    
+    if settings.get('responsive'):
+        size_suffix = f"{settings['size']}w"
+    else:
+        size_suffix = f"{settings['size']}w" if not settings.get('crop') else f"{settings['size']}x{settings['size']}"
+    
+    extension = settings['format'].lower()
+    return f"{clean_base}_{size_suffix}_{timestamp}.{extension}"
+
+def print_current_selections(format=None, size=None, quality=None, aspect=None, anchor=None, preset=None):
     parts = []
+    if preset: parts.append(f"Preset: {preset}")
     if format: parts.append(f"Format: {format}")
     if size: parts.append(f"Size: {size}px")
     if quality: parts.append(f"Quality: {quality}")
@@ -44,341 +285,44 @@ def print_current_selections(format=None, size=None, quality=None, aspect=None, 
     else:
         print(Fore.CYAN + "[No selections made yet.]\n")
 
-# Suppress PIL DecompressionBombWarning
-import warnings
-warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-
-# === Title Banner ===
-box_width = 60
-print(Fore.CYAN + Style.BRIGHT + f"Terminally Quick {__version__} — by {__author__}")
-print(Fore.YELLOW + "[Q] Quit  |  [L] Log  |  [↵] Default\n" + Fore.CYAN + "─" * box_width + Style.RESET_ALL)
-
-# === Folder setup ===
-
-input_folder = 'input_images'
-base_output_folder = 'resized_images'
-
-# Ensure base output folder exists
-os.makedirs(base_output_folder, exist_ok=True)
-
-# === File Type Scan Before Proceeding ===
-
-print(f"\n{Fore.CYAN}📂 Scanning '{input_folder}'...")
-
-supported_exts = (
-    '.png', '.jpg', '.jpeg', '.webp', '.cr3',
-    '.bmp', '.tif', '.tiff', '.ico',
-    '.ppm', '.pgm', '.pbm', '.tga'
-)
-if not os.path.isdir(input_folder):
-    print(f"{Fore.RED}❌ Input folder '{input_folder}' not found. Please create it and add images.")
-    sys.exit()
-all_files = os.listdir(input_folder)
-image_files = [f for f in all_files if f.lower().endswith(supported_exts)]
-irrelevant_files = [f for f in all_files if not f.lower().endswith(supported_exts)]
-
-print(f"{Fore.GREEN}✅ Images found: {len(image_files)}")
-print(f"{Fore.YELLOW}❌ Irrelevant files: {len(irrelevant_files)}")
-
-tmp_log_path = os.path.join(base_output_folder, f"session_file_log_{datetime.now().strftime('%H%M%S')}.txt")
-with open(tmp_log_path, "w") as f:
-    f.write("=== Files Scanned ===\n")
-    f.write("\nFound Images:\n")
-    for img in image_files:
-        f.write(f"✔️ {img}\n")
-    f.write("\nSkipped Files:\n")
-    for irr in irrelevant_files:
-        f.write(f"❌ {irr}\n")
-print(f"{Fore.MAGENTA}ℹ️  File list saved for this scan: {tmp_log_path}")
-
-if len(image_files) == 0:
-    print(f"\n{Fore.RED}🚫 No supported images found. Please add PNG, JPG, JPEG, WEBP, or CR3 files to '{input_folder}' and try again.")
-    sys.exit()
-
-# === Ask user for export settings (with step headers and state) ===
-
-step_num = 1
-format_options = {
-    "1": "WEBP",
-    "2": "JPEG",
-    "3": "PNG",
-    "4": "TIFF",
-    "5": "BMP",
-    "6": "ICO",
-    "7": "PDF"
-}
-output_format = None
-size = None
-quality = None
-aspect_ratio = None
-crop_anchor = None
-crop_to_ratio = False
-
-# Step 1: Export format
-while True:
-    print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
-    print_current_selections()
-    print(Fore.CYAN + "🔧 Choose export format")
-    print("  1: WEBP (default)")
-    print("  2: JPEG")
-    print("  3: PNG")
-    print("  4: TIFF")
-    print("  5: BMP")
-    print("  6: ICO")
-    print("  7: PDF")
-    prompt = "Enter choice (1-8) [default 1]:"
-    print("\n" + "\n".join(textwrap.wrap(prompt, width=60)))
-    format_choice = input("> ").strip().lower()
-    if format_choice == 'q':
-        print(Fore.RED + "Aborted.")
-        sys.exit()
-    if format_choice == 'l':
-        print(Fore.MAGENTA + "Opening scan log file...\n")
-        open_file_cross_platform(tmp_log_path)
-        continue
-    if format_choice in format_options or format_choice == '':
-        output_format = format_options.get(format_choice, "WEBP").upper()
-        break
-    print(f"{Fore.RED}Invalid input. Please enter 1–8, Enter, 'q', or 'l'.")
-
-# Step 2: Shortest side size
-step_num += 1
-while True:
-    print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
-    print_current_selections(output_format)
-    print(Fore.CYAN + "🔢 Enter minimum size for shortest side")
-    prompt = "Enter minimum size for shortest side in pixels (e.g. 550) [default 550]:"
-    print("\n" + "\n".join(textwrap.wrap(prompt, width=60)))
-    size_input = input("> ").strip().lower()
-    if size_input == 'q':
-        print(Fore.RED + "Aborted.")
-        sys.exit()
-    if size_input == 'l':
-        print(Fore.MAGENTA + "Opening scan log file...\n")
-        open_file_cross_platform(tmp_log_path)
-        continue
-    if size_input == '':
-        size = 550
-        break
-    try:
-        size = int(size_input)
-        if size > 0:
-            break
-    except ValueError:
-        pass
-    print(f"{Fore.RED}Invalid input. Enter a positive integer.")
-
-# Step 3: Export quality
-step_num += 1
-while True:
-    print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
-    print_current_selections(output_format, size)
-    print(Fore.CYAN + "🎚️ Enter export quality")
-    prompt = "Enter quality (50 to 100) [default 95]:"
-    print("\n" + "\n".join(textwrap.wrap(prompt, width=60)))
-    quality_input = input("> ").strip().lower()
-    if quality_input == 'q':
-        print(Fore.RED + "Aborted.")
-        sys.exit()
-    if quality_input == 'l':
-        print(Fore.MAGENTA + "Opening scan log file...\n")
-        open_file_cross_platform(tmp_log_path)
-        continue
-    if quality_input == '':
-        quality = 95
-        break
-    try:
-        quality = int(quality_input)
-        if 50 <= quality <= 100:
-            break
-    except ValueError:
-        pass
-    print(f"{Fore.RED}Invalid input. Enter an integer between 50 and 100.")
-
-# Step 4: Crop to aspect ratio
-step_num += 1
-while True:
-    print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
-    print_current_selections(output_format, size, quality)
-    crop_input = input("Do you want to crop all images to the same aspect ratio? (y/n): ").strip().lower()
-    if crop_input == 'q':
-        print(Fore.RED + "Aborted.")
-        sys.exit()
-    if crop_input == 'l':
-        print(Fore.MAGENTA + "Opening scan log file...\n")
-        open_file_cross_platform(tmp_log_path)
-        continue
-    if crop_input in ('y', 'n', ''):
-        crop_to_ratio = (crop_input == 'y')
-        break
-    print(f"{Fore.RED}Invalid input. Enter 'y', 'n', Enter, 'q', or 'l'.")
-
-if crop_to_ratio:
-    # Step 5: Choose aspect ratio
-    step_num += 1
-    while True:
-        print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
-        print_current_selections(output_format, size, quality)
-        print(Fore.CYAN + "📐 Choose crop aspect ratio")
-        print("  1: 4:3 (Standard landscape)")
-        print("  2: 1:1 (Square)")
-        print("  3: 4:5 (Portrait)")
-        print("  4: 3:2 (DSLR landscape)")
-        print("  5: 16:9 (Widescreen)")
-        print("  6: 2:3 (Classic portrait)")
-        print("  7: 5:4 (Large format)")
-        print("  8: 7:5 (Mild wide)")
-        prompt = "Enter choice (1-8) [default 1]:"
-        print("\n" + "\n".join(textwrap.wrap(prompt, width=60)))
-        ratio_choice = input("> ").strip().lower()
-        if ratio_choice == 'q':
-            print(Fore.RED + "Aborted.")
-            sys.exit()
-        if ratio_choice == 'l':
-            print(Fore.MAGENTA + "Opening scan log file...\n")
-            open_file_cross_platform(tmp_log_path)
-            continue
-        ratio_map = {
-            "1": (4, 3),
-            "2": (1, 1),
-            "3": (4, 5),
-            "4": (3, 2),
-            "5": (16, 9),
-            "6": (2, 3),
-            "7": (5, 4),
-            "8": (7, 5),
-        }
-        aspect_ratio = ratio_map.get(ratio_choice, (4, 3))
-        break
-    # Step 5b: Choose anchor point
-    step_num += 1
-    while True:
-        print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
-        print_current_selections(output_format, size, quality, aspect_ratio)
-        crop_anchor_map = {
-            "1": "top-left",
-            "2": "top-center",
-            "3": "top-right",
-            "4": "middle-left",
-            "5": "center",
-            "6": "middle-right",
-            "7": "bottom-left",
-            "8": "bottom-center",
-            "9": "bottom-right"
-        }
-        print(Fore.CYAN + "🎯 Choose crop anchor point")
-        for key, label in crop_anchor_map.items():
-            print(f"  {key}: {label.replace('-', ' ').title()}")
-        prompt = "Enter choice (1-9) [default 5]:"
-        print("\n" + "\n".join(textwrap.wrap(prompt, width=60)))
-        crop_anchor_choice = input("> ").strip().lower()
-        if crop_anchor_choice == 'q':
-            print(Fore.RED + "Aborted.")
-            sys.exit()
-        if crop_anchor_choice == 'l':
-            print(Fore.MAGENTA + "Opening scan log file...\n")
-            open_file_cross_platform(tmp_log_path)
-            continue
-        crop_anchor = crop_anchor_map.get(crop_anchor_choice, "center")
-        break
-else:
-    aspect_ratio = None
-    crop_anchor = None
-
-# Step 6: Confirm settings
-step_num += 1
-print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
-print_current_selections(output_format, size, quality, aspect_ratio if crop_to_ratio else None, crop_anchor if crop_to_ratio else None)
-print(Fore.CYAN + "✅ Confirm settings")
-print(f"\n{Fore.YELLOW}You selected:")
-print(f"- Format: {output_format}")
-print(f"- Shortest side: {size}px")
-print(f"- Quality: {quality}")
-if crop_to_ratio:
-    print(f"- Cropping to ratio: {aspect_ratio[0]}:{aspect_ratio[1]}")
-    print(f"- Anchor point: {crop_anchor.replace('-', ' ').title()}")
-prompt = "Proceed? (y/n) [default y]:"
-print("\n" + "\n".join(textwrap.wrap(prompt, width=60)))
-while True:
-    confirm = input("> ").strip().lower()
-    if confirm == 'q':
-        print(Fore.RED + "Aborted.")
-        sys.exit()
-    if confirm == 'l':
-        print(Fore.MAGENTA + "Opening scan log file...\n")
-        open_file_cross_platform(tmp_log_path)
-        continue
-    if confirm in ('', 'y', 'n'):
-        break
-    print(f"{Fore.RED}Invalid input. Enter 'y', 'n', Enter, 'q', or 'l'.")
-if confirm not in ('', 'y'):
-    print(f"{Fore.RED}Aborted.")
-    sys.exit()
-
-# === Create unique export subfolder ===
-
-timestamp = datetime.now().strftime("%d%m%y_%H%M%S")
-existing_runs = [d for d in os.listdir(base_output_folder) if d.startswith("run")]
-run_count = len(existing_runs) + 1
-output_folder = os.path.join(base_output_folder, f"run{run_count} - {timestamp}")
-os.makedirs(output_folder)
-
-log_lines = []
-
-# Insert timestamp at the top of log_lines
-log_lines.append(f"Processed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-log_lines.append("")
-
-# === Export Settings ===
-log_lines.append("=== Export Settings ===")
-log_lines.append(f"Format: {output_format}")
-log_lines.append(f"Shortest Side: {size}px")
-log_lines.append(f"Quality: {quality}")
-if crop_to_ratio:
-    log_lines.append(f"Cropping Enabled: Yes")
-    log_lines.append(f"  - Aspect Ratio: {aspect_ratio[0]}:{aspect_ratio[1]}")
-    log_lines.append(f"  - Anchor Point: {crop_anchor.replace('-', ' ').title()}")
-else:
-    log_lines.append("Cropping Enabled: No")
-log_lines.append("")  # Blank line after settings
-
-# === Irrelevant Files Skipped ===
-log_lines.append("=== Irrelevant Files Skipped ===")
-if irrelevant_files:
-    for f in irrelevant_files:
-        log_lines.append(f"• {f}")
-else:
-    log_lines.append("None")
-log_lines.append("")
-
-# === Convert CR3 to JPEG preview using ExifTool ===
-
 def convert_cr3_to_jpeg(cr3_path, input_folder):
     import subprocess
     temp_cr3_folder = os.path.join(input_folder, "temp_cr3")
     os.makedirs(temp_cr3_folder, exist_ok=True)
     base = os.path.splitext(os.path.basename(cr3_path))[0]
     temp_path = os.path.join(temp_cr3_folder, f"{base}_preview.jpg")
-    extract_cmd = f'exiftool -b -PreviewImage "{cr3_path}" > "{temp_path}"'
-    os.system(extract_cmd)
+    
+    # Securely extract preview using subprocess instead of shell redirection
+    try:
+        with open(temp_path, "wb") as f:
+            subprocess.run(['exiftool', '-b', '-PreviewImage', cr3_path], stdout=f, check=True)
+    except Exception as e:
+        print(f"{Fore.RED}  [!] Exiftool failed to extract preview: {str(e)}")
+        return None, None
+
+    # Securely get orientation
     try:
         orientation_output = subprocess.check_output(
-            ['exiftool', '-Orientation#', cr3_path],
+            ['exiftool', '-S', '-Orientation#', cr3_path],
             stderr=subprocess.DEVNULL
         ).decode().strip()
-        orientation_value = int(orientation_output.split(":")[-1].strip())
+        
+        # Orientation format is usually "Orientation: N" or just "N" with -S
+        if orientation_output:
+            val = orientation_output.split()[-1]
+            orientation_value = int(val)
+        else:
+            orientation_value = None
     except Exception:
         orientation_value = None
+        
     return temp_path if os.path.exists(temp_path) else None, orientation_value
-
-# === Helpers ===
 
 def apply_exif_orientation(image):
     try:
         for orientation in ExifTags.TAGS.keys():
             if ExifTags.TAGS[orientation] == 'Orientation':
                 break
-
         exif = image._getexif()
         if exif is not None:
             orientation_value = exif.get(orientation, None)
@@ -419,195 +363,843 @@ def crop_to_ratio_with_anchor(img, target_ratio, anchor='center'):
 
     return img.crop((left, top, left + new_width, top + new_height))
 
-import time
-start_time = time.time()
-
-# === Image processing ===
-total = len(image_files)
-# Track image statistics
-count_cropped = 0
-count_upscaled = 0
-
-# === Enhanced Progress Tracking ===
-def print_progress_bar(current, total, filename, start_time):
-    """Simple progress bar for standard version"""
-    percent = (current / total) * 100
-    bar_length = 30
-    filled_length = int(bar_length * current // total)
-    bar = '█' * filled_length + '░' * (bar_length - filled_length)
+# === Main Menu ===
+def save_profile(settings, name):
+    """Save settings as a profile JSON file with duplicate handling"""
+    os.makedirs(PROFILES_DIR, exist_ok=True)
     
-    # Calculate ETA
-    elapsed = time.time() - start_time
-    if current > 0:
-        eta = (elapsed / current) * (total - current)
-        eta_str = f"ETA: {int(eta//60)}:{int(eta%60):02d}" if eta > 60 else f"ETA: {int(eta)}s"
-    else:
-        eta_str = "ETA: calculating..."
+    # Clean name for filename safety
+    safe_name = "".join(x for x in name if x.isalnum() or x in (' ', '-', '_')).strip()
+    if not safe_name: safe_name = "CustomProfile"
     
-    display_name = filename[:20] + "..." if len(filename) > 23 else filename
-    print(f"\r{Fore.GREEN}[{bar}] {percent:5.1f}% ({current}/{total}) {eta_str} | {display_name}", end="", flush=True)
-
-# Add batch warning for large sets
-if len(image_files) > 50:
-    estimated_time = len(image_files) * 1.5  # Estimate 1.5s per image
-    print(f"\n{Fore.YELLOW}⏱️  Large batch detected ({len(image_files)} images)")
-    print(f"Estimated processing time: ~{int(estimated_time//60)}min {int(estimated_time%60)}s")
+    filename = f"{safe_name.replace(' ', '_')}.json"
+    file_path = os.path.join(PROFILES_DIR, filename)
     
-    proceed = input(f"{Fore.CYAN}Continue? (y/n) [default y]: ").strip().lower()
-    if proceed == 'n':
-        print(f"{Fore.RED}Cancelled.")
-        sys.exit()
+    if os.path.exists(file_path):
+        print(f"\n{Fore.YELLOW}[!] Profile '{safe_name}' already exists.")
+        print("  [O] Overwrite existing profile")
+        print("  [R] Rename / New name")
+        print("  [A] Auto-suffix (add _1, _2...)")
+        print("  [C] Cancel saving")
+        
+        choice = input(Fore.CYAN + "Choice [O/R/A/C]: ").strip().lower()
+        if choice == 'c': return False
+        if choice == 'r':
+            new_name = input(Fore.CYAN + "Enter new profile name: ").strip()
+            return save_profile(settings, new_name)
+        if choice == 'a':
+            counter = 1
+            while os.path.exists(file_path):
+                filename = f"{safe_name.replace(' ', '_')}_{counter}.json"
+                file_path = os.path.join(PROFILES_DIR, filename)
+                counter += 1
+        elif choice != 'o':
+            print(f"{Fore.RED}[!] Invalid choice. Cancelled.")
+            return False
 
-print(f"\n{Fore.GREEN}🚀 Starting processing...\n")
-
-for i, filename in enumerate(image_files, 1):
-    print_progress_bar(i, total, filename, start_time)
-    
-    img_path = os.path.join(input_folder, filename)
-    if filename.lower().endswith(".cr3"):
-        if not HAS_EXIFTOOL:
-            print(f"{Fore.RED}⚠️ CR3 file detected but exiftool not available: {filename}. Skipping.")
-            print(f"{Fore.YELLOW}💡 To process CR3 files, install exiftool from: https://exiftool.org/")
-            continue
-        print(f"{Fore.MAGENTA}🔄 Extracting JPEG preview from CR3...")
-        converted_path, orientation_value = convert_cr3_to_jpeg(img_path, input_folder)
-        if not converted_path:
-            print(f"{Fore.RED}⚠️ Failed to extract JPEG preview from CR3: {filename}. Skipping.")
-            continue
-        img_path = converted_path
-    else:
-        orientation_value = None
     try:
-        with Image.open(img_path) as img:
-            if orientation_value is not None:
-                if orientation_value == 3:
-                    img = img.rotate(180, expand=True)
-                elif orientation_value == 6:
-                    img = img.rotate(270, expand=True)
-                elif orientation_value == 8:
-                    img = img.rotate(90, expand=True)
-            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-                img = apply_exif_orientation(img.convert("RGBA"))
-                has_alpha = True
-            else:
-                img = apply_exif_orientation(img.convert("RGB"))
-                has_alpha = False
-            width, height = img.size
-            short_edge = min(width, height)
-            if short_edge <= size:
-                new_img = img
-            else:
-                if width < height:
-                    new_width = size
-                    new_height = int((size / width) * height)
-                else:
-                    new_height = size
-                    new_width = int((size / height) * width)
-                new_img = img.resize((new_width, new_height), Image.LANCZOS)
-            before_upscale = None
-            upscale_w = None
-            upscale_h = None
-            log_lines.append("--------------------------------------------------")
-            log_lines.append(f"Image: {filename}")
-            log_lines.append(f"  - Original Size: {width}x{height}")
-            log_lines.append(f"  - Resized To: {new_img.size[0]}x{new_img.size[1]}")
-            if crop_to_ratio:
-                new_img = crop_to_ratio_with_anchor(new_img, aspect_ratio, crop_anchor)
-                log_lines.append(f"  - Cropped To: {new_img.size[0]}x{new_img.size[1]}")
-                count_cropped += 1
-                # Upscale if either dimension is smaller than the requested size
-                final_w, final_h = new_img.size
-                if min(final_w, final_h) < size:
-                    before_upscale = (final_w, final_h)
-                    if final_w < final_h:
-                        upscale_w = size
-                        upscale_h = int((size / final_w) * final_h)
-                    else:
-                        upscale_h = size
-                        upscale_w = int((size / final_h) * final_w)
-                    new_img = new_img.resize((upscale_w, upscale_h), Image.LANCZOS)
-                    log_lines.append(f"  - Upscaled From: {before_upscale[0]}x{before_upscale[1]} To: {upscale_w}x{upscale_h}")
-                    count_upscaled += 1
-            base_name = os.path.splitext(filename)[0]
-            extension = output_format.lower()
-            output_path = os.path.join(output_folder, f"{base_name}_{timestamp}.{extension}")
-            save_kwargs = {"quality": quality}
-            if output_format == "WEBP":
-                save_kwargs["lossless"] = has_alpha
-            if output_format in ["JPEG", "PDF"]:
-                new_img = new_img.convert("RGB")
-            try:
-                new_img.save(output_path, format=output_format, **save_kwargs)
-            except Exception as e:
-                print(f"{Fore.RED}❌ Failed to save image: {filename}. Error: {e}")
-                continue
-            file_size_kb = os.path.getsize(output_path) // 1024
-            log_lines.append(f"  - Final File Size: {file_size_kb} KB")
+        data = {
+            "profile_name": name,
+            "created_at": datetime.now().isoformat(),
+            "version": __version__,
+            "settings": settings
+        }
+        with open(file_path, 'w') as f:
+            json.dump(data, f, indent=4)
+        print(f"{Fore.GREEN}[OK] Profile saved: {name} ({filename})")
+        return True
     except Exception as e:
-        print(f"{Fore.RED}❌ Failed to open image: {filename}. Error: {e}")
-        continue
+        print(f"{Fore.RED}[!] Could not save profile: {str(e)}")
+        return False
 
-log_lines.append("")
-log_lines.append("████████████████████ Summary ████████████████████")
-log_lines.append(f"Total images processed: {total}")
-log_lines.append(f"Images cropped: {count_cropped}")
-log_lines.append(f"Images upscaled: {count_upscaled}")
-log_lines.append(f"Output folder: {output_folder}")
-log_lines.append("█████████████████████████████████████████████████")
-log_lines.append(f"Total processing time: {round(time.time() - start_time, 2)} seconds")
+def list_profiles():
+    """Load and return all valid profiles from the profiles directory"""
+    profiles = []
+    if not os.path.exists(PROFILES_DIR): return []
+    
+    for filename in os.listdir(PROFILES_DIR):
+        if filename.endswith('.json'):
+            path = os.path.join(PROFILES_DIR, filename)
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                    # Basic validation
+                    if "settings" in data and "profile_name" in data:
+                        profiles.append({
+                            "name": data["profile_name"],
+                            "filename": filename,
+                            "settings": data["settings"]
+                        })
+            except: continue
+    return sorted(profiles, key=lambda x: x['name'].lower())
 
-log_path = os.path.join(output_folder, "log.txt")
-with open(log_path, "w") as log_file:
-    log_file.write("\n".join(log_lines))
+def delete_profile(index):
+    """Delete a profile by index from the list"""
+    profiles = list_profiles()
+    if 0 <= index < len(profiles):
+        profile = profiles[index]
+        path = os.path.join(PROFILES_DIR, profile['filename'])
+        try:
+            os.remove(path)
+            print(f"{Fore.GREEN}[OK] Deleted profile: {profile['name']}")
+            return True
+        except Exception as e:
+            print(f"{Fore.RED}[!] Error deleting profile: {str(e)}")
+    return False
 
- # Optionally clean up CR3 preview JPEGs after use
-temp_cr3_folder = os.path.join(input_folder, "temp_cr3")
-if os.path.exists(temp_cr3_folder):
-    for file in os.listdir(temp_cr3_folder):
-        os.remove(os.path.join(temp_cr3_folder, file))
-    os.rmdir(temp_cr3_folder)
-    print(Fore.GREEN + "🧹 Cleaned up temporary CR3 previews.")
+def show_main_menu():
+    """Display the main menu and get user selection"""
+    while True:
+        print("\n" + Fore.CYAN + "═" * 40 + Style.RESET_ALL)
+        print(f"{Fore.WHITE}{Style.BRIGHT}MODES:{Style.RESET_ALL}")
+        print("  [1] Manual Configuration (Full Control)")
+        print("  [2] Smart Mode (Auto-Suggestions)")
+        print("  [3] Import from JSON (Load Log/Profile)")
+        
+        profiles = list_profiles()
+        if profiles:
+            print(f"\n{Fore.GREEN}{Style.BRIGHT}FAST TRACK (YOUR PROFILES):{Style.RESET_ALL}")
+            for i, profile in enumerate(profiles):
+                print(f"  [{i+4}] Profile: {profile['name']}")
+            
+        print(f"\n{Fore.WHITE}{Style.BRIGHT}MANAGEMENT:{Style.RESET_ALL}")
+        print("  [P] Create New Profile")
+        print("  [D] Delete a Profile")
+        print("  [L] View Most Recent Log")
+        print("  [H] Help")
+        print("  [Q] Quit")
+        
+        choice = input(f"\n{Fore.YELLOW}Choice: {Style.RESET_ALL}").strip().lower()
+        
+        if choice == '1': return 'manual'
+        if choice == '2': return 'smart'
+        if choice == '3': return 'import'
+        if choice == 'p': return 'create_profile'
+        if choice == 'l': view_most_recent_log(); continue
+        if choice == 'h': show_help_screen(); continue
+        if choice == 'q': sys.exit()
+        
+        if choice == 'd':
+            if not profiles:
+                print(f"{Fore.RED}[!] No profiles to delete.")
+                continue
+            idx_input = input(f"{Fore.YELLOW}Enter profile number to delete: {Style.RESET_ALL}").strip()
+            try:
+                idx = int(idx_input) - 4
+                if delete_profile(idx):
+                    print(f"{Fore.GREEN}[OK] Profile deleted.")
+                else:
+                    print(f"{Fore.RED}[!] Invalid profile number.")
+            except ValueError:
+                print(f"{Fore.RED}[!] Invalid input.")
+            continue
+            
+        # Check if choice is a profile number
+        try:
+            val = int(choice)
+            if 4 <= val < 4 + len(profiles):
+                return profiles[val-4]['settings']
+        except ValueError:
+            pass
+            
+        print(f"{Fore.RED}[!] Invalid choice. Please enter a valid option.")
 
-# Clear progress bar
-print("\n" + " " * 80 + "\r", end="")
+# === Main Application Logic ===
+def create_profile_flow():
+    """Step-by-step profile creation without processing"""
+    print(f"\n{Fore.GREEN}{Style.BRIGHT}[NEW] CREATE NEW PROFILE{Style.RESET_ALL}")
+    print(Fore.CYAN + "─" * 40)
+    
+    settings = get_settings()
+    if settings == 'back': return
+    
+    name = input(f"\n{Fore.YELLOW}Enter a name for this profile: {Style.RESET_ALL}").strip()
+    if not name: name = "My Profile"
+    
+    if save_profile(settings, name):
+        print(f"\n{Fore.GREEN}Profile '{name}' is now ready to use from the main menu!")
+    
+    input(f"\n{Fore.YELLOW}Press Enter to return to menu...{Style.RESET_ALL}")
 
-# === Enhanced final message ===
-processing_time = round(time.time() - start_time, 2)
-print(f"""\n{Fore.GREEN}{Style.BRIGHT}🎉 Processing Complete!{Style.RESET_ALL}
+def main():
+    while True:
+        # Suppress PIL warnings
+        import warnings
+        warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+        
+        # === Common Setup ===
+        input_folder = 'input_images'
+        base_output_folder = 'resized_images'
+        
+        # Ensure all required folders exist
+        os.makedirs(input_folder, exist_ok=True)
+        os.makedirs(base_output_folder, exist_ok=True)
+        os.makedirs(PROFILES_DIR, exist_ok=True)
+        
+        # Title banner
+        print(Fore.CYAN + Style.BRIGHT + f"Terminally Quick {__version__} — by {__author__}")
+        
+        box_width = 60
+        print(Fore.YELLOW + "[Q] Quit  |  [L] Log  |  [C] Change Path  |  [ENTER] Default\n" + Fore.CYAN + "─" * box_width + Style.RESET_ALL)
+        
+        # === Custom Path Selection ===
+        print(f"Current Input Folder: {Fore.GREEN}{input_folder}{Style.RESET_ALL}")
+        choice = input(f"{Fore.CYAN}Press [C] to Change Folder or [Enter] to continue: {Style.RESET_ALL}").strip().lower()
+        
+        if choice == 'c':
+            new_path = input(f"\n{Fore.YELLOW}Enter target folder path (or drag and drop folder here): {Style.RESET_ALL}").strip().strip("'").strip('"')
+            if os.path.isdir(new_path):
+                input_folder = new_path
+                print(f"{Fore.GREEN}[OK] Input folder set to: {input_folder}")
+            else:
+                print(f"{Fore.RED}[!] Invalid path. Falling back to default: {input_folder}")
+        elif choice == 'q':
+            sys.exit()
 
-{Fore.CYAN}📊 Results Summary:
-  ✅ Images processed: {total - count_cropped + count_cropped} 
-  🖼️  Images cropped: {count_cropped}
-  📈 Images upscaled: {count_upscaled}
-  ⏱️  Processing time: {processing_time}s
-  📁 Output folder: {os.path.basename(output_folder)}
-""")
+        # Create helpful instructions in default input folder if it's empty and using default
+        if input_folder == 'input_images' and not os.listdir(input_folder):
+            readme_path = os.path.join(input_folder, 'INSTRUCTIONS.txt')
+            with open(readme_path, 'w') as f:
+                f.write("Welcome to TerminallyQuick v3.0!\n\n")
+                f.write("This is your INPUT folder.\n\n")
+                f.write("HOW TO USE:\n")
+                f.write("1. Add your images here.\n")
+                f.write("2. Run TerminallyQuick.\n\n")
+                f.write("SUPPORTED FORMATS:\n")
+                f.write("PNG, JPEG, WEBP, BMP, TIFF, ICO, CR3, AVIF, HEIC\n")
+        
+        # === Main Menu & Mode Selection ===
+        mode_or_settings = show_main_menu()
+        
+        if mode_or_settings == 'create_profile':
+            create_profile_flow()
+            continue
+            
+        # Determine mode and settings
+        if isinstance(mode_or_settings, dict):
+            settings = mode_or_settings
+            mode = "Fast Track Profile"
+        elif mode_or_settings == 'manual':
+            settings = get_settings()
+            if settings == 'back': continue
+            mode = "Manual Configuration"
+        elif mode_or_settings == 'smart':
+            # File scanning needed for smart mode
+            image_files = scan_for_images(input_folder)
+            if not image_files: continue
+            settings = get_smart_settings(image_files)
+            if settings == 'back': continue
+            mode = "Smart Mode"
+        elif mode_or_settings == 'import':
+            settings = import_settings_from_json()
+            if not settings: continue
+            mode = "JSON Import"
+        else:
+            continue
+            
+        # === File scanning (if not already done) ===
+        if 'image_files' not in locals():
+            image_files = scan_for_images(input_folder)
+            if not image_files: continue
+            
+        # === One-Image Test Option ===
+        print(f"\n{Fore.CYAN}Options before processing:")
+        print("  [Enter] Process all images")
+        print("  [T] Test Run (Process 1 image & open it)")
+        print("  [B] Back to Menu")
+        
+        batch_choice = input(f"\n{Fore.YELLOW}Choice: {Style.RESET_ALL}").strip().lower()
+        if batch_choice == 'b': continue
+        if batch_choice == 't':
+            process_images(image_files[:1], settings, mode, is_test=True)
+            continue
+            
+        # Start full process
+        process_images(image_files, settings, mode)
+        
+        # Post-process: Offer to save settings as profile if it was manual
+        if mode == "Manual Configuration":
+            save_choice = input(f"\n{Fore.MAGENTA}Save these manual settings as a profile for future use? (y/n) [default n]: {Style.RESET_ALL}").strip().lower()
+            if save_choice == 'y':
+                prof_name = input(f"{Fore.YELLOW}Enter profile name: {Style.RESET_ALL}").strip()
+                if prof_name: save_profile(settings, prof_name)
 
-# Auto-open results folder
-auto_open = input(f"{Fore.CYAN}Open results folder? (y/n) [default y]: ").strip().lower()
-if auto_open in ('', 'y'):
-    open_file_cross_platform(output_folder)
+        # Final loop decision
+        restart = input(f"\n{Fore.CYAN}Process another batch? (y/n) [default y]: {Style.RESET_ALL}").strip().lower()
+        if restart == 'n':
+            print(f"{Fore.YELLOW}Thanks for using TerminallyQuick!")
+            break
 
-# === Enhanced next actions ===
-print(f"\n{Fore.CYAN}What would you like to do next?")
-print("  [r] Run another batch")
-print("  [v] View detailed log")
-print("  [o] Open output folder again")
-print("  [q] Quit")
+def scan_for_images(input_folder):
+    """Helper to scan for images and handle empty results"""
+    print(f"\n{Fore.CYAN}[INFO] Scanning '{input_folder}'...")
+    
+    supported_exts = (
+        '.png', '.jpg', '.jpeg', '.webp', '.cr3',
+        '.bmp', '.tif', '.tiff', '.ico',
+        '.ppm', '.pgm', '.pbm', '.tga', '.avif', '.heic'
+    )
+    
+    if not os.path.isdir(input_folder):
+        print(f"{Fore.RED}[!] Input folder '{input_folder}' not found.")
+        return None
+    
+    all_files = os.listdir(input_folder)
+    image_files = [f for f in all_files if f.lower().endswith(supported_exts)]
+    irrelevant_files = [f for f in all_files if not f.lower().endswith(supported_exts)]
+    
+    print(f"{Fore.GREEN}[OK] Images found: {len(image_files)}")
+    if irrelevant_files:
+        print(f"{Fore.YELLOW}[!] Non-image files: {len(irrelevant_files)}")
+    
+    if not image_files:
+        print(f"{Fore.RED}[!] No supported images found in '{input_folder}'.")
+        print(f"{Fore.YELLOW}[TIP] Supported formats: {', '.join(supported_exts).upper()}")
+        input(f"\n{Fore.YELLOW}Press Enter to return to menu...{Style.RESET_ALL}")
+        return None
+        
+    return image_files
 
-while True:
-    next_action = input("> ").strip().lower()
-    if next_action == 'v':
-        print(Fore.MAGENTA + "Opening log file...\n")
-        open_file_cross_platform(log_path)
-        print(f"{Fore.CYAN}\nWhat would you like to do next?")
-        print("  [r] Run another batch")
-        print("  [q] Quit")
-        continue
-    elif next_action == 'r':
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-    elif next_action == 'q' or next_action == '':
-        print(f"{Fore.YELLOW}Goodbye!")
-        sys.exit()
+def get_settings():
+    """Manual settings configuration"""
+    format_options = {
+        "1": "WEBP", "2": "JPEG", "3": "PNG", "4": "TIFF",
+        "5": "BMP", "6": "ICO", "7": "PDF", "8": "AVIF"
+    }
+    default_format = "WEBP"
+    default_size = 800
+    default_quality = 85
+    
+    # Format selection
+    while True:
+        print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
+        print_current_selections()
+        print(Fore.CYAN + "[FORMAT] Choose export format")
+        print(f"{Fore.YELLOW}[TIP] Suggestions:")
+        for key, fmt in format_options.items():
+            suffix = " (recommended for web)" if fmt == "WEBP" else ""
+            suffix = " (next-gen web format)" if fmt == "AVIF" else suffix
+            print(f"  {key}: {fmt}{suffix}")
+        
+        format_choice = input("Enter choice (1-8/L/H/B/Q) [default 1]: ").strip().lower()
+        if format_choice == 'q': sys.exit()
+        if format_choice == 'b': return 'back'
+        if format_choice == 'h':
+            show_help_screen()
+            continue
+        if format_choice == 'l':
+            view_most_recent_log()
+            continue
+        if format_choice in format_options or format_choice == '':
+            output_format = format_options.get(format_choice, default_format).upper()
+            break
+        print(f"{Fore.RED}Invalid input.")
+    
+    # Size selection
+    while True:
+        print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
+        print_current_selections(output_format)
+        print(Fore.CYAN + "[SIZE] Enter size for shortest side")
+        print(f"{Fore.YELLOW}[TIP] Suggestions:")
+        print("   • 300px - Thumbnails")
+        print("   • 800px - Standard web content")
+        print("   • 1200px - Hero banners / High res")
+        
+        size_input = input(f"Enter size in pixels (or H/B/Q) [default {default_size}]: ").strip().lower()
+        if size_input == 'q': sys.exit()
+        if size_input == 'b': return 'back'
+        if size_input == 'h':
+            show_help_screen()
+            continue
+        if size_input == 'l':
+            view_most_recent_log()
+            continue
+        if size_input == '':
+            size = default_size
+            break
+        try:
+            size = int(size_input)
+            if size > 0: break
+        except ValueError: pass
+        print(f"{Fore.RED}Invalid input. Enter a positive integer.")
+    
+    # Quality selection  
+    while True:
+        print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
+        print_current_selections(output_format, size)
+        print(Fore.CYAN + "[QUALITY] Enter export quality")
+        print(f"{Fore.YELLOW}[TIP] Optimization Tips:")
+        print("   • 80-85: High compression, perfect for web")
+        print("   • 90-95: Balanced quality/size")
+        
+        quality_input = input(f"Enter quality (50-100 or H/B/Q) [default {default_quality}]: ").strip().lower()
+        if quality_input == 'q': sys.exit()
+        if quality_input == 'b': return 'back'
+        if quality_input == 'h':
+            show_help_screen()
+            continue
+        if quality_input == 'l':
+            view_most_recent_log()
+            continue
+        if quality_input == '':
+            quality = default_quality
+            break
+        try:
+            quality = int(quality_input)
+            if 50 <= quality <= 100: break
+        except ValueError: pass
+        print(f"{Fore.RED}Invalid input. Enter 50-100.")
+    
+    # Upscaling option
+    while True:
+        print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
+        print_current_selections(output_format, size, quality)
+        print(Fore.CYAN + "[UPSCALE] Upscaling Policy")
+        print(f"{Fore.YELLOW}[TIP] Pro Tip:")
+        print("   • Yes: Small images will be enlarged to target size")
+        print("   • No: Small images kept at original size (best quality)")
+        
+        upscale_input = input("Allow upscaling small images? (y/n/B/Q) [default n]: ").strip().lower()
+        if upscale_input == 'q': sys.exit()
+        if upscale_input == 'b': return 'back'
+        if upscale_input == 'h':
+            show_help_screen()
+            continue
+        allow_upscale = upscale_input in ('y', 'yes')
+        break
+    
+    # Cropping
+    while True:
+        crop_input = input("\nDo you want to crop to an aspect ratio? (y/n/B/Q): ").strip().lower()
+        if crop_input == 'q': sys.exit()
+        if crop_input == 'b': return 'back'
+        if crop_input == 'h':
+            show_help_screen()
+            continue
+        
+        if crop_input == 'y':
+            ratio_options = {
+                "1": (1, 1, "Square - Social, thumbnails"),
+                "2": (16, 9, "Widescreen - Hero banners"),
+                "3": (4, 3, "Standard - Blog images"),
+                "4": (4, 5, "Portrait - E-commerce"),
+                "5": (21, 9, "Ultra-wide banners"),
+                "6": (9, 16, "Vertical - Stories")
+            }
+            
+            while True:
+                print(Fore.CYAN + "[CROP] Choose aspect ratio:")
+                for key, (w, h, desc) in ratio_options.items():
+                    print(f"  {key}: {w}:{h} ({desc})")
+                
+                ratio_choice = input("Enter choice (1-6/B/Q/H) [default 1]: ").strip().lower()
+                if ratio_choice == 'q': sys.exit()
+                if ratio_choice == 'b': return 'back'
+                if ratio_choice == 'h':
+                    show_help_screen()
+                    continue
+                if ratio_choice == 'l':
+                    view_most_recent_log()
+                    continue
+                
+                w, h, _ = ratio_options.get(ratio_choice, ratio_options["1"])
+                anchor = "center"  # Default to center
+                
+                return {
+                    "name": "Custom",
+                    "format": output_format,
+                    "size": size,
+                    "quality": quality,
+                    "crop": True,
+                    "aspect": (w, h),
+                    "anchor": anchor,
+                    "allow_upscale": allow_upscale
+                }
+        else:
+            return {
+                "name": "Custom",
+                "format": output_format,
+                "size": size,
+                "quality": quality,
+                "crop": False,
+                "aspect": None,
+                "anchor": None,
+                "allow_upscale": allow_upscale
+            }
+
+def get_smart_settings(image_files):
+    """Auto-suggest settings based on images"""
+    print(f"\n{Fore.MAGENTA}[SMART] Smart Mode: Analyzing images...{Style.RESET_ALL}")
+    
+    total_images = len(image_files)
+    print(f"  • Analyzed {total_images} images")
+    print(f"  • Suggested focus: Balanced Quality and Compression")
+    
+    # Suggest WEBP 800px 85% as a smart default
+    settings = {
+        "name": "Smart Suggestion",
+        "format": "WEBP",
+        "size": 800,
+        "quality": 85,
+        "crop": False,
+        "aspect": None,
+        "anchor": None,
+        "allow_upscale": False
+    }
+    
+    print(f"\n{Fore.YELLOW}Suggested Settings:")
+    print(f"  Format:  {settings['format']}")
+    print(f"  Size:    {settings['size']}px")
+    print(f"  Quality: {settings['quality']}%")
+    print(f"  Crop:    {'No'}")
+    
+    confirm = input(f"\n{Fore.CYAN}Use these settings? (y/n/B) [default y]: ").strip().lower()
+    if confirm == 'b': return 'back'
+    if confirm in ('', 'y', 'yes'):
+        return settings
     else:
-        print(f"{Fore.RED}Invalid input. Enter 'r', 'v', or 'q'.")
+        print(f"{Fore.YELLOW}Switching to Manual Configuration...")
+        return get_settings()
+
+def process_images(image_files, settings, mode, is_test=False):
+    """Process images with given settings and rich logging"""
+    if is_test:
+        print(f"\n{Fore.YELLOW}[TEST RUN] Processing a single image to verify quality...{Style.RESET_ALL}")
+    
+    # Setup output folder
+    # === Setup Session Folder ===
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_id = f"run_{timestamp}"
+    output_folder = os.path.join('resized_images', session_id)
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Setup detailed logging
+    log_data, settings_path = setup_logging(output_folder, settings, mode)
+    
+    # === Pre-Process Analysis ===
+    print(f"\n{Fore.YELLOW}[INFO] Analyzing batch requirements...{Style.RESET_ALL}")
+    analysis = {"downscale": 0, "upscale": 0, "keep": 0, "failed": 0}
+    
+    for fname in image_files:
+        p_path = os.path.join(input_folder, fname)
+        try:
+            with Image.open(p_path) as p_img:
+                w, h = p_img.size
+                short = min(w, h)
+                action, _, _ = get_resize_action_and_emoji(short, settings['size'], settings.get('allow_upscale', False))
+                if action == "downscaled": analysis["downscale"] += 1
+                elif action == "upscaled": analysis["upscale"] += 1
+                else: analysis["keep"] += 1
+        except:
+            analysis["failed"] += 1
+
+    total_images = len(image_files)
+    processed_count = 0
+    skipped_count = 0
+    total_output_size = 0
+    
+    # Prepare size variants (for now just one, but kept extensible)
+    size_variants = [{"name": "", "size": settings['size']}]
+    
+    # === Processing Preview ===
+    print(f"\n{Fore.CYAN}{Style.BRIGHT}[PREVIEW] PROCESSING PREVIEW:{Style.RESET_ALL}")
+    print(f"  • Images to process: {len(image_files)}")
+    print(f"  • Output Format:     {settings['format']}")
+    print(f"  • Target Size:       {settings['size']}px (short edge)")
+    print(f"  • Target Quality:    {settings['quality']}%")
+    print(f"  • Crop to Aspect:    {f'{settings['aspect'][0]}:{settings['aspect'][1]}' if settings['crop'] else 'None'}")
+    print(f"  • Upscaling:         {'Allowed [OK]' if settings.get('allow_upscale') else 'Prevented [!] '}")
+    
+    print(f"\n{Fore.GREEN}{Style.BRIGHT}[ANALYSIS] BATCH BREAKDOWN:{Style.RESET_ALL}")
+    print(f"  (-) To Downscale:    {analysis['downscale']}")
+    print(f"  (+) To Upscale:      {analysis['upscale']}")
+    print(f"  (=) Already Target:  {analysis['keep']}")
+    if analysis['failed'] > 0:
+        print(f"  (!) Unreadable:      {analysis['failed']}")
+    
+    print(Fore.CYAN + "─" * 40 + Style.RESET_ALL)
+    
+    # Show sample filenames
+    sample_count = min(3, len(image_files))
+    print(f"{Fore.YELLOW}[INFO] Sample Filenames:{Style.RESET_ALL}")
+    for i in range(sample_count):
+        fname = image_files[i]
+        sample_out = generate_web_friendly_filename(fname, settings, "TIMESTAMP")
+        print(f"  {fname} -> {sample_out}")
+    
+    if len(image_files) > sample_count:
+        print(f"  ... and {len(image_files) - sample_count} more")
+        
+    print(Fore.CYAN + "─" * 40 + Style.RESET_ALL)
+    
+    # Warning for large batches
+    if len(image_files) > 50:
+        print(f"{Fore.RED}{Style.BRIGHT}⚠️ LARGE BATCH WARNING:{Style.RESET_ALL}")
+        print(f"  Processing {len(image_files)} images may take a few minutes.")
+        print(Fore.CYAN + "─" * 40 + Style.RESET_ALL)
+    
+    proceed = input(f"\n{Fore.GREEN}{Style.BRIGHT}Proceed with processing? (y/n) [default y]: {Style.RESET_ALL}").strip().lower()
+    if proceed not in ('', 'y', 'yes'):
+        print(f"{Fore.YELLOW}Processing cancelled.")
+        return 
+    
+    # === Processing Loop ===
+    start_processing_time = time.time()
+    
+    # Thread-safe progress tracking
+    progress_lock = threading.Lock()
+    progress_stats = {
+        "processed": 0,
+        "skipped": 0,
+        "current": 0
+    }
+    
+    def update_progress():
+        with progress_lock:
+            current = progress_stats["current"]
+            total = total_images
+            
+            percent = 100 * (current / total) if total > 0 else 0
+            bar_length = 30
+            filled = int(bar_length * current // total) if total > 0 else 0
+            bar = '█' * filled + '░' * (bar_length - filled)
+            
+            elapsed = time.time() - start_processing_time
+            if current > 0:
+                per_img = elapsed / current
+                est_remaining = per_img * (total - current)
+                time_str = f" | ETA: {int(est_remaining)}s"
+            else:
+                time_str = ""
+                
+            sys.stdout.write(f"\r{Fore.CYAN}[PROG] |{bar}| {percent:3.0f}% ({current}/{total}){time_str}{Style.RESET_ALL} ")
+            sys.stdout.flush()
+
+    # Redefining process_single_image with FULL logic inline to ensure it works
+    def process_item(filename):
+        img_path = os.path.join(input_folder, filename)
+        file_result = {"status": "skipped", "size_kb": 0}
+        
+        try:
+            # Init Check
+            is_cr3 = filename.lower().endswith('.cr3')
+            orientation_value = None
+            working_img_path = img_path
+            temp_to_delete = None
+            
+            if is_cr3:
+                if not HAS_EXIFTOOL:
+                    return {"status": "skipped", "reason": "Exiftool not found for CR3 conversion"}
+                temp_jpg, orientation_value = convert_cr3_to_jpeg(img_path, input_folder)
+                if not temp_jpg:
+                    return {"status": "skipped", "reason": "CR3 extraction failed"}
+                working_img_path = temp_jpg
+                temp_to_delete = temp_jpg
+
+            with Image.open(working_img_path) as img:
+                original_size = img.size
+                original_size_str = f"{original_size[0]}x{original_size[1]}"
+                
+                # Metadata stripping & basic orientation
+                img = apply_exif_orientation(img)
+                
+                # Transparency
+                has_alpha = False
+                if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                    has_alpha = True
+                    if settings['format'] in ["JPEG", "BMP", "TIFF"]: # These formats don't support alpha
+                        bg = Image.new("RGB", img.size, (255, 255, 255))
+                        if img.mode == "P":
+                            img = img.convert("RGBA")
+                        bg.paste(img, mask=img.split()[3])
+                        img = bg
+                    else: # For formats like WEBP, PNG, keep alpha
+                        img = img.convert("RGBA")
+                else:
+                    img = img.convert("RGB") # Ensure RGB for non-alpha images
+                
+                # Resize Logic
+                final_short_edge = settings['size']
+                width, height = img.size
+                short_edge = min(width, height)
+                
+                action, emoji_tag, description = get_resize_action_and_emoji(short_edge, final_short_edge, settings.get('allow_upscale', False))
+                resize_info = action # for log string
+                
+                new_img = img.copy() # Start with a copy to avoid modifying original `img`
+                
+                if short_edge <= final_short_edge and not settings.get('allow_upscale', False):
+                    # Keep original size if smaller and upscaling not allowed
+                    resize_info = f"kept at original size"
+                elif short_edge == final_short_edge:
+                    resize_info = f"already target size"
+                else:
+                    # Perform resize
+                    if width < height:
+                        new_width = final_short_edge
+                        new_height = int((final_short_edge / width) * height)
+                    else:
+                        new_height = final_short_edge
+                        new_width = int((final_short_edge / height) * width)
+                    
+                    if short_edge < final_short_edge: # Upscaling
+                        new_img = img.resize((new_width, new_height), Image.BICUBIC)
+                        resize_info = f"upscaled from {short_edge}px"
+                    else: # Downscaling
+                        new_img = img.resize((new_width, new_height), Image.LANCZOS)
+                        resize_info = f"downscaled from {short_edge}px"
+                
+                # Apply cropping
+                crop_info_str = ""
+                if settings['crop']:
+                    new_img = crop_to_ratio_with_anchor(new_img, settings['aspect'], settings['anchor'])
+                    crop_info_str = f" → cropped to {new_img.size[0]}x{new_img.size[1]}"
+                
+                # Save
+                # We only have one variant support active
+                new_filename = generate_web_friendly_filename(filename, settings, session_id)
+                output_path = os.path.join(output_folder, new_filename)
+                
+                save_kwargs = {"quality": settings['quality'], "optimize": True}
+                if settings['format'] == "WEBP":
+                    save_kwargs["lossless"] = has_alpha
+                    save_kwargs["method"] = 6  # Best compression
+                
+                if settings['format'] in ["JPEG", "PDF", "AVIF"]:
+                    if new_img.mode != "RGB":
+                        new_img = new_img.convert("RGB")
+                
+                new_img.save(output_path, format=settings['format'], **save_kwargs)
+                
+                file_size = get_file_size_kb(output_path)
+                
+                file_result = {
+                    "status": "success",
+                    "filename": filename,
+                    "original_size": original_size_str,
+                    "final_size": f"{new_img.width}x{new_img.height}",
+                    "action": action,
+                    "file_size": file_size,
+                    "log_entry": { 
+                        "file": filename, 
+                        "original": original_size_str, 
+                        "result": f"{new_img.width}x{new_img.height}", 
+                        "action": action, 
+                        "size_kb": file_size 
+                    },
+                    "new_size_kb": file_size,
+                    "terminal_output": f"{Fore.GREEN}  {emoji_tag} {description}: {original_size_str} → {new_img.size[0]}x{new_img.size[1]}{crop_info_str}\n{Fore.WHITE}  --- {file_size} KB ({get_file_size_kb(img_path) / file_size if file_size > 0 else 1.0:.1f}:1 compression) | {resize_info}"
+                }
+
+            if temp_to_delete and os.path.exists(temp_to_delete):
+                try: os.remove(temp_to_delete)
+                except: pass
+                
+            return file_result
+
+        except Exception as e:
+            if temp_to_delete and os.path.exists(temp_to_delete):
+                try: os.remove(temp_to_delete)
+                except: pass
+            return {"status": "failed", "reason": str(e)}
+        finally:
+            with progress_lock:
+                progress_stats["current"] += 1
+                update_progress()
+
+    # Execute Thread Pool
+    # We use a modest number of workers (e.g. 4 or 8) 
+    # Python is GIL constrained for CPU but PIL releases GIL for some ops, and IO is beneficial.
+    max_workers = min(32, os.cpu_count() + 4)
+    if is_test: max_workers = 1
+    
+    print(f"\n{Fore.CYAN}[PROG] Starting processing with {max_workers} workers...{Style.RESET_ALL}")
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_item, f): f for f in image_files}
+        
+        for future in concurrent.futures.as_completed(futures):
+            filename = futures[future]
+            try:
+                res = future.result()
+                if res and res["status"] == "success":
+                    processed_count += 1
+                    total_output_size += res["new_size_kb"]
+                    
+                    # Log to file (safe as we just append locally then aggregate? 
+                    # actually we need to write to log_data. 
+                    # log_data is massive dict. Doing it here in main thread is safe.
+                    entry = res["log_entry"]
+                    variant_name = size_variants[0]["name"] or "default"
+                    if variant_name not in log_data["processing"]["results"]:
+                         log_data["processing"]["results"][variant_name] = []
+                    log_data["processing"]["results"][variant_name].append(entry)
+                    
+                    # Update Stats
+                    action = res["action"]
+                    if action == "upscaled": log_data["processing"]["stats"]["upscaled_count"] += 1
+                    elif action == "downscaled": log_data["processing"]["stats"]["downscaled_count"] += 1
+                    else: log_data["processing"]["stats"]["kept_original_size"] += 1
+                    
+                    # Print terminal output for this image
+                    print(f"\n{Fore.CYAN}[RUN] Processing: {filename}")
+                    print(res["terminal_output"])
+                    
+                else:
+                    skipped_count += 1
+                    log_data["processing"]["stats"]["total_skipped"] += 1
+                    print(f"\n{Fore.RED}[RUN] Skipping: {filename} - {res.get('reason', 'Unknown error')}")
+            except Exception as exc:
+                skipped_count += 1
+                log_data["processing"]["stats"]["total_skipped"] += 1
+                print(f"\n{Fore.RED}[RUN] Skipping: {filename} - Generated an exception: {exc}")
+    
+    print() # Newline after progress bar
+    
+    # === Results ===
+    processing_time = round(time.time() - start_processing_time, 2)
+    total_input_mb = sum(os.path.getsize(os.path.join(input_folder, f)) for f in image_files) // (1024 * 1024)
+    compression_ratio = (total_input_mb * 1024 / total_output_size) if total_output_size > 0 else 0
+    
+    save_final_log(log_data, settings_path, processing_time, total_input_mb, total_output_size)
+    stats = log_data["processing"]["stats"]
+    
+    print(f"""
+{Fore.GREEN}{Style.BRIGHT}Processing Complete!{Style.RESET_ALL}
+{Fore.CYAN}Session Results:
+  • Images processed: {processed_count}
+  • Images skipped: {skipped_count}
+  • Total input size: {total_input_mb} MB
+  • Total output size: {round(total_output_size / 1024, 2)} MB  
+  • Overall compression: {compression_ratio:.1f}:1
+  • Processing time: {processing_time}s
+
+{Fore.YELLOW}Resize Operations:
+  (+) Upscaled: {stats['upscaled_count']} images
+  (-) Downscaled: {stats['downscaled_count']} images
+  (=) Kept original: {stats['kept_original_size']} images
+
+{Fore.MAGENTA}Output Location: {output_folder}
+Detailed logs saved: processing_settings.json & processing_settings_summary.txt
+""")
+    
+    # Open output folder
+    if is_test:
+        print(f"{Fore.GREEN}[TEST] Test image saved to: {output_folder}")
+        open_file_cross_platform(output_folder)
+    elif input(f"\n{Fore.CYAN}Open output folder? (y/n) [default y]: ").strip().lower() in ('', 'y'):
+        open_file_cross_platform(output_folder)
+    
+    # Cleanup CR3 temp files
+    temp_cr3_folder = os.path.join('input_images', "temp_cr3")
+    if os.path.exists(temp_cr3_folder):
+        shutil.rmtree(temp_cr3_folder)
+    
+    print(f"{Fore.YELLOW}Thanks for using TerminallyQuick!")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n\n{Fore.YELLOW}[INFO] Session interrupted by user. Quitting gracefully...")
+        sys.exit(0)

@@ -1,0 +1,20 @@
+Welcome to TerminallyQuick v2.0!
+
+This is your default input folder.
+
+HOW TO USE:
+1. Drag and drop your images into this folder.
+2. Run the TerminallyQuick launcher for your OS.
+3. Follow the text prompts to optimize your images.
+
+CUSTOM PATHS:
+You can also process images from any other folder by choosing 
+the [C] Change Path option at the start of the application.
+When prompted for a path, you can drag any folder from your 
+desktop into the terminal window.
+
+SUPPORTED FORMATS:
+PNG, JPEG, WEBP, AVIF, HEIC, CR3 (RAW), BMP, TIFF, ICO, PDF.
+
+---
+TerminallyQuick - Fast image optimization.

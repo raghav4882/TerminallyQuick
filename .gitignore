@@ -48,10 +48,9 @@ Thumbs.db
 
 # Application specific - Keep folders but not contents
 input_images/*
-!input_images/.gitkeep
-!input_images/README_ADD_IMAGES_HERE.txt
+!input_images/INSTRUCTIONS.txt
 resized_images/*
-!resized_images/.gitkeep
+profiles/*
 temp_cr3/
 
 # User settings (local only)
