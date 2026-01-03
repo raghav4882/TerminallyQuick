@@ -586,7 +586,7 @@ def main():
         choice = input(f"{Fore.CYAN}Press [C] to Change Folder or [Enter] to continue: {Style.RESET_ALL}").strip().lower()
         
         if choice == 'c':
-            new_path = input(f"\n{Fore.YELLOW}Enter target folder path (or drag and drop folder here): {Style.RESET_ALL}").strip().strip("'").strip('"')
+            new_path = input(f"\n{Fore.YELLOW}Enter target folder path (or drag and drop folder here): {Style.RESET_ALL}").strip().strip("'").strip('"').replace('\\ ', ' ')
             if os.path.isdir(new_path):
                 input_folder = new_path
                 config['recent_input_folder'] = input_folder
