@@ -59,6 +59,7 @@ temp_cr3/
 # Logs
 *.log
 session_file_*.txt
+tests/
 
 # IDE
 .vscode/

@@ -8,13 +8,13 @@ Professional Image Optimization Suite
 __version__ = "3.0"
 __author__ = "TerminallyQuick Team"
 
+import os
+from PIL import Image, ExifTags
+
 # Define profile directory
 PROFILES_DIR = 'profiles'
 if not os.path.exists(PROFILES_DIR):
     os.makedirs(PROFILES_DIR, exist_ok=True)
-
-from PIL import Image, ExifTags
-import os
 from datetime import datetime
 import time
 from colorama import init, Fore, Style
@@ -169,7 +169,7 @@ def setup_logging(output_folder, settings, version_mode):
             "output_folder": output_folder
         },
         "processing": {
-            "images": [],
+            "images": {},
             "stats": {
                 "total_processed": 0,
                 "total_skipped": 0,
@@ -244,10 +244,12 @@ def save_final_log(log_data, settings_path, processing_time, total_input_mb, tot
         f.write(f"  Kept Original: {stats['kept_original_size']}\n\n")
         
         f.write(f"Individual Image Details:\n")
-        for img in log_data['processing']['images']:
-            variant_info = f" ({img['variant']})" if img['variant'] else ""
-            f.write(f"  {img['filename']}{variant_info}:\n")
-            f.write(f"    {img['original_size']} → {img['final_size']} | {img['action']} | {img['file_size_kb']} KB\n")
+        for variant, imgs in log_data['processing']['images'].items():
+            if variant != "default":
+                f.write(f"\nVariant: {variant}\n")
+            for img in imgs:
+                f.write(f"  {img['file']}:\n")
+                f.write(f"    {img['original']} → {img['result']} | {img['action']} | {img['size_kb']} KB\n")
 
 def get_resize_action_and_emoji(original_short_edge, target_size, allow_upscale):
     """Determine what action will be taken and appropriate emoji/description"""
@@ -611,11 +613,11 @@ def main():
         batch_choice = input(f"\n{Fore.YELLOW}Choice: {Style.RESET_ALL}").strip().lower()
         if batch_choice == 'b': continue
         if batch_choice == 't':
-            process_images(image_files[:1], settings, mode, is_test=True)
+            process_images(input_folder, image_files[:1], settings, mode, is_test=True)
             continue
             
         # Start full process
-        process_images(image_files, settings, mode)
+        process_images(input_folder, image_files, settings, mode)
         
         # Post-process: Offer to save settings as profile if it was manual
         if mode == "Manual Configuration":
@@ -861,7 +863,7 @@ def get_smart_settings(image_files):
         print(f"{Fore.YELLOW}Switching to Manual Configuration...")
         return get_settings()
 
-def process_images(image_files, settings, mode, is_test=False):
+def process_images(input_folder, image_files, settings, mode, is_test=False, custom_output_folder=None):
     """Process images with given settings and rich logging"""
     if is_test:
         print(f"\n{Fore.YELLOW}[TEST RUN] Processing a single image to verify quality...{Style.RESET_ALL}")
@@ -870,7 +872,10 @@ def process_images(image_files, settings, mode, is_test=False):
     # === Setup Session Folder ===
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session_id = f"run_{timestamp}"
-    output_folder = os.path.join('resized_images', session_id)
+    if custom_output_folder:
+        output_folder = custom_output_folder
+    else:
+        output_folder = os.path.join('resized_images', session_id)
     os.makedirs(output_folder, exist_ok=True)
     
     # Setup detailed logging
@@ -947,7 +952,7 @@ def process_images(image_files, settings, mode, is_test=False):
     start_processing_time = time.time()
     
     # Thread-safe progress tracking
-    progress_lock = threading.Lock()
+    progress_lock = threading.RLock()
     progress_stats = {
         "processed": 0,
         "skipped": 0,
@@ -1131,9 +1136,9 @@ def process_images(image_files, settings, mode, is_test=False):
                     # log_data is massive dict. Doing it here in main thread is safe.
                     entry = res["log_entry"]
                     variant_name = size_variants[0]["name"] or "default"
-                    if variant_name not in log_data["processing"]["results"]:
-                         log_data["processing"]["results"][variant_name] = []
-                    log_data["processing"]["results"][variant_name].append(entry)
+                    if variant_name not in log_data["processing"]["images"]:
+                         log_data["processing"]["images"][variant_name] = []
+                    log_data["processing"]["images"][variant_name].append(entry)
                     
                     # Update Stats
                     action = res["action"]
