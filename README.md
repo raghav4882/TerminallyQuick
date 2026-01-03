@@ -1,6 +1,13 @@
-# TerminallyQuick v3.0
+# TerminallyQuick v4.0 — High-Performance Image Optimization
+The definitive, lightning-fast CLI suite for bulk image resizing, smart quality analysis, and real-time folder monitoring.
 
-A **high-performance** command-line suite for bulk image optimization, resizing, and conversion. Designed for engineers and photographers who need speed, precision, and professional results without the bloat.
+**v4.0 "High Performance" Release**
+- ⚡ **Turbo Engine**: Multi-threaded parallel processing (up to 32x speedup).
+- 🐕 **Watchdog Mode**: Real-time folder monitoring (Profile-integrated).
+- ⚡ **Delta Sync**: MD5-based delta processing (Only process what changed).
+- 📊 **Modern Display**: Persistent progress bar + scrolling results engine.
+- 📂 **Smart Mirror**: Full recursive folder mirroring by default.
+- 🤖 **Smart AI Quality**: Per-image quality thresholding using RMS analysis.
 
 ## 🚀 Key Features
 

@@ -48,12 +48,13 @@ Thumbs.db
 
 # Application specific - Keep folders but not contents
 input_images/*
-!input_images/INSTRUCTIONS.txt
 resized_images/*
 profiles/*
 temp_cr3/
 
-# User settings (local only)
+# User settings & Cache (v4.0 flagship features)
+.tq_sync
+.tq_config
 .terminallyquick_recent.json
 
 # Logs

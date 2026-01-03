@@ -21,7 +21,7 @@ if %errorlevel% neq 0 (
     echo Supported formats: PNG, JPEG, WEBP, CR3, BMP, TIFF, and more! >> input_images\README_ADD_IMAGES_HERE.txt
 )
 
-echo [LAUNCH] TerminallyQuick v3.0 - 100% Safe Launcher
+echo [LAUNCH] TerminallyQuick v4.0 - 100% Safe Launcher
 echo ===============================================
 echo [INFO] This launcher NEVER modifies your system!
 echo [INFO] Everything stays within this project folder.
@@ -326,6 +326,22 @@ if !errorlevel! equ 0 (
         pause
         exit /b 1
     )
+    
+    echo [INFO] Installing pillow-heif (HEIC support)...
+    pip install --quiet pillow-heif
+    if !errorlevel! equ 0 (
+        echo [OK] pillow-heif installed successfully!
+    ) else (
+        echo [WARNING] pillow-heif installation failed. HEIC might not work.
+    )
+    
+    echo [INFO] Installing watchdog (Watch Mode)...
+    pip install --quiet watchdog
+    if !errorlevel! equ 0 (
+        echo [OK] watchdog installed successfully!
+    ) else (
+        echo [WARNING] watchdog installation failed. Watch Mode will be disabled.
+    )
 )
 
 REM Verify the packages are installed
@@ -381,10 +397,10 @@ if !errorlevel! neq 0 (
 echo.
 echo [OK] All dependencies ready! Everything is contained in this folder.
 echo.
-echo [START] Starting TerminallyQuick v3.0...
+echo [START] Starting TerminallyQuick v4.0...
 echo.
 
-REM Run the application using the virtual environment Python
+REM Use the virtual environment's Python to ensure dependencies are available
 python src\terminallyquick.py
 
 REM Keep terminal open so user can see any final messages

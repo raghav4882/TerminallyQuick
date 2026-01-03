@@ -1,3 +1,4 @@
 Pillow>=11.0.0
 colorama>=0.4.4
 pillow-heif>=0.13.0
+watchdog

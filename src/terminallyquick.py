@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 
 """
-TerminallyQuick v3.0
+TerminallyQuick v4.0
 Professional Image Optimization Suite
 """
 
-__version__ = "3.0"
+__version__ = "4.0"
 __author__ = "TerminallyQuick Team"
 
 import os
-from PIL import Image, ExifTags
+from PIL import Image, ExifTags, ImageChops, ImageStat
+import math
 
-# Define profile directory
+# Define project directories and config
 PROFILES_DIR = 'profiles'
+CONFIG_FILE = '.tq_config'
 if not os.path.exists(PROFILES_DIR):
     os.makedirs(PROFILES_DIR, exist_ok=True)
 from datetime import datetime
@@ -24,6 +26,15 @@ import platform
 import json
 import concurrent.futures
 import threading
+import hashlib
+
+# Functionality for Watchdog
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+    HAS_WATCHDOG = True
+except ImportError:
+    HAS_WATCHDOG = False
 
 # functionality for HEIC support
 try:
@@ -47,6 +58,24 @@ def open_file_cross_platform(path):
         os.system(f'xdg-open "{path}"')
     else:
         print(f"{Fore.RED}[!] Unsupported OS. Please open the file manually: {path}")
+
+def load_app_config():
+    """Load persistent application settings"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_app_config(config):
+    """Save persistent application settings"""
+    try:
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=2)
+    except:
+        pass
 
 def view_most_recent_log():
     """Find and open the most recent processing log"""
@@ -274,14 +303,18 @@ def generate_web_friendly_filename(original_name, settings, timestamp):
     extension = settings['format'].lower()
     return f"{clean_base}_{size_suffix}_{timestamp}.{extension}"
 
-def print_current_selections(format=None, size=None, quality=None, aspect=None, anchor=None, preset=None):
+def print_current_selections(format=None, size=None, quality=None, aspect=None, anchor=None, upscale=None, recursive=None, preset=None):
     parts = []
     if preset: parts.append(f"Preset: {preset}")
     if format: parts.append(f"Format: {format}")
     if size: parts.append(f"Size: {size}px")
     if quality: parts.append(f"Quality: {quality}")
-    if aspect: parts.append(f"Aspect: {aspect[0]}:{aspect[1]}")
+    if aspect: 
+        if isinstance(aspect, tuple): parts.append(f"Aspect: {aspect[0]}:{aspect[1]}")
+        else: parts.append(f"Aspect: {aspect}")
     if anchor: parts.append(f"Anchor: {anchor.replace('-', ' ').title()}")
+    if upscale is not None: parts.append(f"Upscale: {'Yes' if upscale else 'No'}")
+    if recursive is not None: parts.append(f"Recursive: {'Yes' if recursive else 'No'}")
     if parts:
         print(Fore.CYAN + "[" + " | ".join(parts) + "]\n")
     else:
@@ -457,6 +490,8 @@ def show_main_menu():
         print("  [1] Manual Configuration (Full Control)")
         print("  [2] Smart Mode (Auto-Suggestions)")
         print("  [3] Import from JSON (Load Log/Profile)")
+        if HAS_WATCHDOG:
+            print("  [W] Watchdog Mode 🐕 (Auto-Process New Files)")
         
         profiles = list_profiles()
         if profiles:
@@ -471,11 +506,12 @@ def show_main_menu():
         print("  [H] Help")
         print("  [Q] Quit")
         
-        choice = input(f"\n{Fore.YELLOW}Choice: {Style.RESET_ALL}").strip().lower()
+        choice = input(f"\n{Fore.YELLOW}Choice (1-3/W/P/... ) [default 1]: {Style.RESET_ALL}").strip().lower()
         
-        if choice == '1': return 'manual'
+        if choice in ('1', ''): return 'manual'
         if choice == '2': return 'smart'
         if choice == '3': return 'import'
+        if choice == 'w' and HAS_WATCHDOG: return 'watchdog'
         if choice == 'p': return 'create_profile'
         if choice == 'l': view_most_recent_log(); continue
         if choice == 'h': show_help_screen(); continue
@@ -524,14 +560,15 @@ def create_profile_flow():
     input(f"\n{Fore.YELLOW}Press Enter to return to menu...{Style.RESET_ALL}")
 
 def main():
+    # === Common Setup (Persists during session) ===
+    config = load_app_config()
+    input_folder = config.get('recent_input_folder', 'input_images')
+    if not os.path.isdir(input_folder):
+         input_folder = 'input_images'
+         
+    base_output_folder = 'resized_images'
+    
     while True:
-        # Suppress PIL warnings
-        import warnings
-        warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-        
-        # === Common Setup ===
-        input_folder = 'input_images'
-        base_output_folder = 'resized_images'
         
         # Ensure all required folders exist
         os.makedirs(input_folder, exist_ok=True)
@@ -552,9 +589,11 @@ def main():
             new_path = input(f"\n{Fore.YELLOW}Enter target folder path (or drag and drop folder here): {Style.RESET_ALL}").strip().strip("'").strip('"')
             if os.path.isdir(new_path):
                 input_folder = new_path
-                print(f"{Fore.GREEN}[OK] Input folder set to: {input_folder}")
+                config['recent_input_folder'] = input_folder
+                save_app_config(config)
+                print(f"{Fore.GREEN}[OK] Input folder set and saved: {input_folder}")
             else:
-                print(f"{Fore.RED}[!] Invalid path. Falling back to default: {input_folder}")
+                print(f"{Fore.RED}[!] Invalid path. Falling back to current: {input_folder}")
         elif choice == 'q':
             sys.exit()
 
@@ -562,7 +601,7 @@ def main():
         if input_folder == 'input_images' and not os.listdir(input_folder):
             readme_path = os.path.join(input_folder, 'INSTRUCTIONS.txt')
             with open(readme_path, 'w') as f:
-                f.write("Welcome to TerminallyQuick v3.0!\n\n")
+                f.write("Welcome to TerminallyQuick v4.0!\n\n")
                 f.write("This is your INPUT folder.\n\n")
                 f.write("HOW TO USE:\n")
                 f.write("1. Add your images here.\n")
@@ -577,6 +616,10 @@ def main():
             create_profile_flow()
             continue
             
+        if mode_or_settings == 'watchdog':
+            run_watchdog_mode(input_folder)
+            continue
+            
         # Determine mode and settings
         if isinstance(mode_or_settings, dict):
             settings = mode_or_settings
@@ -586,8 +629,8 @@ def main():
             if settings == 'back': continue
             mode = "Manual Configuration"
         elif mode_or_settings == 'smart':
-            # File scanning needed for smart mode
-            image_files = scan_for_images(input_folder)
+            # File scanning needed for smart mode - Default to recursive for Smart Mode
+            image_files = scan_for_images(input_folder, recursive=True)
             if not image_files: continue
             settings = get_smart_settings(image_files)
             if settings == 'back': continue
@@ -599,9 +642,17 @@ def main():
         else:
             continue
             
-        # === File scanning (if not already done) ===
-        if 'image_files' not in locals():
-            image_files = scan_for_images(input_folder)
+        # === File scanning logic ===
+        # If recursion is requested, we MUST scan (or re-scan) recursively.
+        # Otherwise, scan if we haven't yet.
+        recursive_requested = settings.get('recursive', False)
+        
+        # If recursive active, force a new scan. If not recursive, only scan if missing.
+        if recursive_requested:
+             image_files = scan_for_images(input_folder, recursive=True)
+             if not image_files: continue
+        elif 'image_files' not in locals():
+            image_files = scan_for_images(input_folder, recursive=False)
             if not image_files: continue
             
         # === One-Image Test Option ===
@@ -614,6 +665,14 @@ def main():
         if batch_choice == 'b': continue
         if batch_choice == 't':
             process_images(input_folder, image_files[:1], settings, mode, is_test=True)
+            
+            # Post-test prompt
+            remaining = len(image_files) - 1
+            if remaining > 0:
+                print(f"\n{Fore.GREEN}[TEST COMPLETE] Verification image saved.")
+                proceed = input(f"{Fore.CYAN}Proceed with the remaining {remaining} images? (y/n) [default y]: {Style.RESET_ALL}").strip().lower()
+                if proceed not in ('n', 'no'):
+                    process_images(input_folder, image_files[1:], settings, mode)
             continue
             
         # Start full process
@@ -631,10 +690,15 @@ def main():
         if restart == 'n':
             print(f"{Fore.YELLOW}Thanks for using TerminallyQuick!")
             break
+            
+        # Reset image_files for next iteration to ensure fresh state
+        if 'image_files' in locals():
+             del image_files
 
-def scan_for_images(input_folder):
-    """Helper to scan for images and handle empty results"""
-    print(f"\n{Fore.CYAN}[INFO] Scanning '{input_folder}'...")
+def scan_for_images(input_folder, recursive=False):
+    """Helper to scan for images and handle empty results. Returns relative paths."""
+    search_type = "Recursive" if recursive else "Standard"
+    print(f"\n{Fore.CYAN}[INFO] {search_type} scan in '{input_folder}'...")
     
     supported_exts = (
         '.png', '.jpg', '.jpeg', '.webp', '.cr3',
@@ -646,13 +710,29 @@ def scan_for_images(input_folder):
         print(f"{Fore.RED}[!] Input folder '{input_folder}' not found.")
         return None
     
-    all_files = os.listdir(input_folder)
-    image_files = [f for f in all_files if f.lower().endswith(supported_exts)]
-    irrelevant_files = [f for f in all_files if not f.lower().endswith(supported_exts)]
+    image_files = []
+    irrelevant_count = 0
+    
+    if recursive:
+        for root, dirs, files in os.walk(input_folder):
+            for f in files:
+                rel_path = os.path.relpath(os.path.join(root, f), input_folder)
+                if f.lower().endswith(supported_exts):
+                    image_files.append(rel_path)
+                else:
+                    if f != '.DS_Store': irrelevant_count += 1
+    else:
+        all_files = os.listdir(input_folder)
+        for f in all_files:
+            if f.lower().endswith(supported_exts):
+                image_files.append(f)
+            else:
+                if f != '.DS_Store' and not os.path.isdir(os.path.join(input_folder, f)):
+                    irrelevant_count += 1
     
     print(f"{Fore.GREEN}[OK] Images found: {len(image_files)}")
-    if irrelevant_files:
-        print(f"{Fore.YELLOW}[!] Non-image files: {len(irrelevant_files)}")
+    if irrelevant_count > 0:
+        print(f"{Fore.YELLOW}[!] Non-image files: {irrelevant_count}")
     
     if not image_files:
         print(f"{Fore.RED}[!] No supported images found in '{input_folder}'.")
@@ -660,6 +740,8 @@ def scan_for_images(input_folder):
         input(f"\n{Fore.YELLOW}Press Enter to return to menu...{Style.RESET_ALL}")
         return None
         
+    # Sort for consistency
+    image_files.sort()
     return image_files
 
 def get_settings():
@@ -770,64 +852,120 @@ def get_settings():
         allow_upscale = upscale_input in ('y', 'yes')
         break
     
-    # Cropping
+    # Cropping options
+    aspect = None
+    anchor = None
+    aspect_desc = None
     while True:
-        crop_input = input("\nDo you want to crop to an aspect ratio? (y/n/B/Q): ").strip().lower()
+        print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
+        print_current_selections(output_format, size, quality, upscale=allow_upscale)
+        print(Fore.CYAN + "[CROP] Smart Cropping & Aspect Ratio")
+        print(f"{Fore.YELLOW}[TIP] Project Layout:")
+        print("   • No: Keep original aspect ratio (standard)")
+        print("   • Yes: Crop to a specific ratio (1:1, 16:9, etc.)")
+        
+        crop_input = input("Crop to a specific aspect ratio? (y/n/B/Q) [default n]: ").strip().lower()
         if crop_input == 'q': sys.exit()
         if crop_input == 'b': return 'back'
         if crop_input == 'h':
             show_help_screen()
             continue
-        
-        if crop_input == 'y':
-            ratio_options = {
-                "1": (1, 1, "Square - Social, thumbnails"),
-                "2": (16, 9, "Widescreen - Hero banners"),
-                "3": (4, 3, "Standard - Blog images"),
-                "4": (4, 5, "Portrait - E-commerce"),
-                "5": (21, 9, "Ultra-wide banners"),
-                "6": (9, 16, "Vertical - Stories")
-            }
             
-            while True:
-                print(Fore.CYAN + "[CROP] Choose aspect ratio:")
-                for key, (w, h, desc) in ratio_options.items():
-                    print(f"  {key}: {w}:{h} ({desc})")
-                
-                ratio_choice = input("Enter choice (1-6/B/Q/H) [default 1]: ").strip().lower()
-                if ratio_choice == 'q': sys.exit()
-                if ratio_choice == 'b': return 'back'
-                if ratio_choice == 'h':
-                    show_help_screen()
-                    continue
-                if ratio_choice == 'l':
-                    view_most_recent_log()
-                    continue
-                
-                w, h, _ = ratio_options.get(ratio_choice, ratio_options["1"])
-                anchor = "center"  # Default to center
-                
-                return {
-                    "name": "Custom",
-                    "format": output_format,
-                    "size": size,
-                    "quality": quality,
-                    "crop": True,
-                    "aspect": (w, h),
-                    "anchor": anchor,
-                    "allow_upscale": allow_upscale
-                }
-        else:
-            return {
-                "name": "Custom",
-                "format": output_format,
-                "size": size,
-                "quality": quality,
-                "crop": False,
-                "aspect": None,
-                "anchor": None,
-                "allow_upscale": allow_upscale
+        if crop_input in ('y', 'yes'):
+            crop_input = 'y'
+            # Aspect selection
+            print(f"\n{Fore.CYAN}Choose Aspect Ratio:")
+            print("  1: Square (1:1)")
+            print("  2: Landscape (4:3)")
+            print("  3: Widescreen (16:9)")
+            print("  4: Portrait (3:4)")
+            print("  5: Cinematic (21:9)")
+            
+            aspect_choice = input(f"{Fore.YELLOW}Choice (1-5): {Style.RESET_ALL}").strip()
+            aspect_map = {
+                "1": ((1, 1), "Square"),
+                "2": ((4, 3), "Landscape"),
+                "3": ((16, 9), "Widescreen"),
+                "4": ((3, 4), "Portrait"),
+                "5": ((21, 9), "Cinematic")
             }
+            if aspect_choice in aspect_map:
+                aspect, aspect_desc = aspect_map[aspect_choice]
+            else:
+                print(f"{Fore.YELLOW}Defaulting to Square (1:1)")
+                aspect, aspect_desc = aspect_map["1"]
+                
+            # Anchor selection
+            print(f"\n{Fore.CYAN}Choose Focal Point (Anchor):")
+            print("  1: Center (Balanced)")
+            print("  2: Top (Portraits)")
+            print("  3: Bottom (Landscape foreground)")
+            print("  4: Left")
+            print("  5: Right")
+            
+            anchor_choice = input(f"{Fore.YELLOW}Choice (1-5): {Style.RESET_ALL}").strip()
+            anchor_map = {"1": "center-center", "2": "top-center", "3": "bottom-center", "4": "center-left", "5": "center-right"}
+            anchor = anchor_map.get(anchor_choice, "center-center")
+            break
+        else:
+            crop_input = 'n'
+            break
+
+    # Recursive Mirroring
+    while True:
+        print("\n" + Fore.CYAN + "─" * 60 + Style.RESET_ALL)
+        print_current_selections(output_format, size, quality, aspect=aspect_desc, upscale=allow_upscale)
+        print(Fore.CYAN + "[RECURSION] Recursive Mirroring")
+        print(f"{Fore.YELLOW}[TIP] Project Mirroring:")
+        print("   • Yes: Scan all subfolders and recreate structure in output")
+        print("   • No: Scan only the top-level folder")
+        
+        recursive_input = input("Mirror subfolders? (y/n/B/Q) [default y]: ").strip().lower()
+        if recursive_input == 'q': sys.exit()
+        if recursive_input == 'b': return 'back'
+        if recursive_input == 'h':
+            show_help_screen()
+            continue
+        recursive = recursive_input in ('', 'y', 'yes')
+        break
+
+    # Final Confirmation
+    print("\n" + Fore.GREEN + "══ CONFIGURATION COMPLETE ══" + Style.RESET_ALL)
+    print(f" Format:    {format_options.get(next(k for k,v in format_options.items() if v==output_format), output_format)}") # Re-derive key for display or just show format
+    print(f" Size:      {size}px")
+    print(f" Quality:   {quality}%")
+    print(f" Upscale:   {allow_upscale}")
+    print(f" Crop:      {f'{aspect[0]}:{aspect[1]}' if crop_input == 'y' else 'No'}")
+    print(f" Recursive: {recursive}")
+    
+    confirm = input(f"\n{Fore.YELLOW}Start processing with these settings? (y/n) [default y]: {Style.RESET_ALL}").strip().lower()
+    if confirm not in ('', 'y', 'yes'):
+        return get_settings() # Restart or handling back is better, but following pattern
+
+    if crop_input == 'y':
+        return {
+            "name": "Custom",
+            "format": output_format,
+            "size": size,
+            "quality": quality,
+            "crop": True,
+            "aspect": aspect,
+            "anchor": anchor,
+            "allow_upscale": allow_upscale,
+            "recursive": recursive
+        }
+    else:
+        return {
+            "name": "Custom",
+            "format": output_format,
+            "size": size,
+            "quality": quality,
+            "crop": False,
+            "aspect": None,
+            "anchor": None,
+            "allow_upscale": allow_upscale,
+            "recursive": recursive
+        }
 
 def get_smart_settings(image_files):
     """Auto-suggest settings based on images"""
@@ -839,14 +977,16 @@ def get_smart_settings(image_files):
     
     # Suggest WEBP 800px 85% as a smart default
     settings = {
-        "name": "Smart Suggestion",
+        "name": "Smart (Auto)",
         "format": "WEBP",
         "size": 800,
         "quality": 85,
         "crop": False,
         "aspect": None,
         "anchor": None,
-        "allow_upscale": False
+        "allow_upscale": False,
+        "recursive": True,
+        "smart_optimize": True # Enable RMS Visual Check
     }
     
     print(f"\n{Fore.YELLOW}Suggested Settings:")
@@ -854,6 +994,7 @@ def get_smart_settings(image_files):
     print(f"  Size:    {settings['size']}px")
     print(f"  Quality: {settings['quality']}%")
     print(f"  Crop:    {'No'}")
+    print(f"  Recursive: {'Yes'}") # Suggest Yes for smart settings
     
     confirm = input(f"\n{Fore.CYAN}Use these settings? (y/n/B) [default y]: ").strip().lower()
     if confirm == 'b': return 'back'
@@ -906,50 +1047,59 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
     # Prepare size variants (for now just one, but kept extensible)
     size_variants = [{"name": "", "size": settings['size']}]
     
-    # === Processing Preview ===
-    print(f"\n{Fore.CYAN}{Style.BRIGHT}[PREVIEW] PROCESSING PREVIEW:{Style.RESET_ALL}")
-    print(f"  • Images to process: {len(image_files)}")
-    print(f"  • Output Format:     {settings['format']}")
-    print(f"  • Target Size:       {settings['size']}px (short edge)")
-    print(f"  • Target Quality:    {settings['quality']}%")
-    print(f"  • Crop to Aspect:    {f'{settings['aspect'][0]}:{settings['aspect'][1]}' if settings['crop'] else 'None'}")
-    print(f"  • Upscaling:         {'Allowed [OK]' if settings.get('allow_upscale') else 'Prevented [!] '}")
-    
-    print(f"\n{Fore.GREEN}{Style.BRIGHT}[ANALYSIS] BATCH BREAKDOWN:{Style.RESET_ALL}")
-    print(f"  (-) To Downscale:    {analysis['downscale']}")
-    print(f"  (+) To Upscale:      {analysis['upscale']}")
-    print(f"  (=) Already Target:  {analysis['keep']}")
-    if analysis['failed'] > 0:
-        print(f"  (!) Unreadable:      {analysis['failed']}")
-    
-    print(Fore.CYAN + "─" * 40 + Style.RESET_ALL)
-    
-    # Show sample filenames
-    sample_count = min(3, len(image_files))
-    print(f"{Fore.YELLOW}[INFO] Sample Filenames:{Style.RESET_ALL}")
-    for i in range(sample_count):
-        fname = image_files[i]
-        sample_out = generate_web_friendly_filename(fname, settings, "TIMESTAMP")
-        print(f"  {fname} -> {sample_out}")
-    
-    if len(image_files) > sample_count:
-        print(f"  ... and {len(image_files) - sample_count} more")
+    if mode != "Watch":
+        # === Processing Preview ===
+        print(f"\n{Fore.CYAN}{Style.BRIGHT}[PREVIEW] PROCESSING PREVIEW:{Style.RESET_ALL}")
+        print(f"  • Images to process: {len(image_files)}")
+        print(f"  • Output Format:     {settings['format']}")
+        print(f"  • Target Size:       {settings['size']}px (short edge)")
+        print(f"  • Target Quality:    {settings['quality']}%")
+        print(f"  • Crop to Aspect:    {f'{settings['aspect'][0]}:{settings['aspect'][1]}' if settings['crop'] else 'None'}")
+        print(f"  • Upscaling:         {'Allowed [OK]' if settings.get('allow_upscale') else 'Prevented [!] '}")
         
-    print(Fore.CYAN + "─" * 40 + Style.RESET_ALL)
-    
-    # Warning for large batches
-    if len(image_files) > 50:
-        print(f"{Fore.RED}{Style.BRIGHT}⚠️ LARGE BATCH WARNING:{Style.RESET_ALL}")
-        print(f"  Processing {len(image_files)} images may take a few minutes.")
+        print(f"\n{Fore.GREEN}{Style.BRIGHT}[ANALYSIS] BATCH BREAKDOWN:{Style.RESET_ALL}")
+        print(f"  (-) To Downscale:    {analysis['downscale']}")
+        print(f"  (+) To Upscale:      {analysis['upscale']}")
+        print(f"  (=) Already Target:  {analysis['keep']}")
+        if analysis['failed'] > 0:
+            print(f"  (!) Unreadable:      {analysis['failed']}")
+        
         print(Fore.CYAN + "─" * 40 + Style.RESET_ALL)
+        
+        # Show sample filenames
+        sample_count = min(3, len(image_files))
+        print(f"{Fore.YELLOW}[INFO] Sample Filenames:{Style.RESET_ALL}")
+        for i in range(sample_count):
+            fname = image_files[i]
+            sample_out = generate_web_friendly_filename(fname, settings, "TIMESTAMP")
+            print(f"  {fname} -> {sample_out}")
+        
+        if len(image_files) > sample_count:
+            print(f"  ... and {len(image_files) - sample_count} more")
+            
+        print(Fore.CYAN + "─" * 40 + Style.RESET_ALL)
+        
+        # Warning for large batches
+        if len(image_files) > 50:
+            print(f"{Fore.RED}{Style.BRIGHT}⚠️ LARGE BATCH WARNING:{Style.RESET_ALL}")
+            print(f"  Processing {len(image_files)} images may take a few minutes.")
+            print(Fore.CYAN + "─" * 40 + Style.RESET_ALL)
     
-    proceed = input(f"\n{Fore.GREEN}{Style.BRIGHT}Proceed with processing? (y/n) [default y]: {Style.RESET_ALL}").strip().lower()
+    if mode == "Watch":
+        proceed = 'y'
+    else:
+        proceed = input(f"\n{Fore.GREEN}{Style.BRIGHT}Proceed with processing? (y/n) [default y]: {Style.RESET_ALL}").strip().lower()
+        
     if proceed not in ('', 'y', 'yes'):
         print(f"{Fore.YELLOW}Processing cancelled.")
         return 
     
     # === Processing Loop ===
     start_processing_time = time.time()
+    
+    # Delta Sync Init
+    delta_cache = DeltaSync.load_cache()
+    cache_lock = threading.RLock()
     
     # Thread-safe progress tracking
     progress_lock = threading.RLock()
@@ -977,7 +1127,9 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
             else:
                 time_str = ""
                 
-            sys.stdout.write(f"\r{Fore.CYAN}[PROG] |{bar}| {percent:3.0f}% ({current}/{total}){time_str}{Style.RESET_ALL} ")
+            # Clear line first to avoid ghosting (using 100 chars for wider terminals)
+            sys.stdout.write("\r" + " " * 100 + "\r")
+            sys.stdout.write(f"{Fore.CYAN}[PROG] |{bar}| {percent:3.0f}% ({current}/{total}){time_str}{Style.RESET_ALL}")
             sys.stdout.flush()
 
     # Redefining process_single_image with FULL logic inline to ensure it works
@@ -986,6 +1138,47 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
         file_result = {"status": "skipped", "size_kb": 0}
         
         try:
+            # === Delta Sync Check ===
+            input_hash = DeltaSync.get_hash(img_path, settings)
+            if input_hash:
+                with cache_lock:
+                    cached_entry = delta_cache.get(input_hash)
+                
+                if cached_entry and os.path.exists(cached_entry['path']):
+                    # COPY existing optimized file
+                    # Handle mirroring for output path
+                    relative_dir = os.path.dirname(filename)
+                    target_dir = os.path.join(output_folder, relative_dir)
+                    if relative_dir:
+                        os.makedirs(target_dir, exist_ok=True)
+                        
+                    new_filename = generate_web_friendly_filename(os.path.basename(filename), settings, session_id)
+                    output_path = os.path.join(target_dir, new_filename)
+                    
+                    try:
+                        shutil.copy2(cached_entry['path'], output_path)
+                        file_size = get_file_size_kb(output_path)
+                        # We simulate "success" result
+                        return {
+                            "status": "success",
+                            "filename": filename,
+                            "original_size": "Cached",
+                            "final_size": "Cached",
+                            "action": "synced (cached)",
+                            "file_size": file_size,
+                            "new_size_kb": file_size,
+                            "log_entry": {
+                                "file": filename,
+                                "original": "Cached",
+                                "result": "Cached",
+                                "action": "synced (cached)",
+                                "size_kb": file_size
+                            },
+                            "terminal_output": f"{Fore.CYAN}[SYNC]{Style.RESET_ALL} {filename:<30} | {'Cached':<10} | {file_size:>6} KB | Delta Sync Restore"
+                        }
+                    except:
+                        pass # if copy fails, re-process
+
             # Init Check
             is_cr3 = filename.lower().endswith('.cr3')
             orientation_value = None
@@ -1062,8 +1255,15 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
                 
                 # Save
                 # We only have one variant support active
-                new_filename = generate_web_friendly_filename(filename, settings, session_id)
-                output_path = os.path.join(output_folder, new_filename)
+                
+                # Handle mirroring if dealing with relative paths
+                relative_dir = os.path.dirname(filename)
+                target_dir = os.path.join(output_folder, relative_dir)
+                if relative_dir:
+                    os.makedirs(target_dir, exist_ok=True)
+                
+                new_filename = generate_web_friendly_filename(os.path.basename(filename), settings, session_id)
+                output_path = os.path.join(target_dir, new_filename)
                 
                 save_kwargs = {"quality": settings['quality'], "optimize": True}
                 if settings['format'] == "WEBP":
@@ -1074,10 +1274,62 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
                     if new_img.mode != "RGB":
                         new_img = new_img.convert("RGB")
                 
-                new_img.save(output_path, format=settings['format'], **save_kwargs)
+                # === Smart Quality Validation ===
+                used_quality = settings['quality']
+                smart_tag = ""
+                
+                if settings.get('smart_optimize', False) and settings['format'] in ['JPEG', 'WEBP']:
+                    # Generate Candidate B (Aggressive)
+                    aggressive_q = max(50, used_quality - 15)
+                    # We need to save to buffer to compare re-compressed result vs "ideal" result
+                    # Actually, we should compare: 
+                    # 1. Standard Result (Q85)
+                    # 2. Aggressive Result (Q70)
+                    # And compare them visually. 
+                    # Simpler: Generate Aggressive. Compare Aggressive to RAW New_Img (pre-compression).
+                    
+                    # We can't really compare properly without saving/loading or simulating save.
+                    # Let's save Aggressive to temp.
+                    temp_smart = output_path + ".smart_temp"
+                    try:
+                        save_kwargs_smart = save_kwargs.copy()
+                        save_kwargs_smart['quality'] = aggressive_q
+                        new_img.save(temp_smart, format=settings['format'], **save_kwargs_smart)
+                        
+                        # Load back to compare pixels
+                        with Image.open(temp_smart) as smart_img:
+                             # Compare smart_img vs new_img (in memory)
+                             diff = calculate_rms_diff(new_img, smart_img)
+                             
+                        # Threshold: RMS < 2.5 is usuallly indistinguishable
+                        if diff < 2.5:
+                            # It looks good! Use it.
+                            used_quality = aggressive_q
+                            smart_tag = f" [Smart: Q{aggressive_q} | Diff {diff:.2f}]"
+                            # Move temp to real
+                            shutil.move(temp_smart, output_path)
+                            resize_info += smart_tag
+                        else:
+                            # Too much diff, keep standard
+                            # Delete temp
+                            os.remove(temp_smart)
+                            # Save standard (since we didn't save it yet fully, or we can just save now)
+                            new_img.save(output_path, format=settings['format'], **save_kwargs)
+                            
+                    except:
+                        # Fallback to standard
+                         new_img.save(output_path, format=settings['format'], **save_kwargs)
+                else:
+                    # Standard Save
+                    new_img.save(output_path, format=settings['format'], **save_kwargs)
                 
                 file_size = get_file_size_kb(output_path)
                 
+                # Update Cache
+                if input_hash:
+                    with cache_lock:
+                        delta_cache[input_hash] = {"path": output_path, "timestamp": time.time()}
+
                 file_result = {
                     "status": "success",
                     "filename": filename,
@@ -1093,7 +1345,7 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
                         "size_kb": file_size 
                     },
                     "new_size_kb": file_size,
-                    "terminal_output": f"{Fore.GREEN}  {emoji_tag} {description}: {original_size_str} → {new_img.size[0]}x{new_img.size[1]}{crop_info_str}\n{Fore.WHITE}  --- {file_size} KB ({get_file_size_kb(img_path) / file_size if file_size > 0 else 1.0:.1f}:1 compression) | {resize_info}"
+                    "terminal_output": f"{Fore.GREEN}[OK]{Style.RESET_ALL} {filename:<30} | {new_img.width}x{new_img.height:<10} | {file_size:>6} KB | {description}"
                 }
 
             if temp_to_delete and os.path.exists(temp_to_delete):
@@ -1110,7 +1362,7 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
         finally:
             with progress_lock:
                 progress_stats["current"] += 1
-                update_progress()
+                # update_progress()  # Removed: Main thread handles consistent rendering now
 
     # Execute Thread Pool
     # We use a modest number of workers (e.g. 4 or 8) 
@@ -1118,7 +1370,9 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
     max_workers = min(32, os.cpu_count() + 4)
     if is_test: max_workers = 1
     
-    print(f"\n{Fore.CYAN}[PROG] Starting processing with {max_workers} workers...{Style.RESET_ALL}")
+    if mode != "Watch":
+        print(f"\n{Fore.CYAN}[PROG] Starting processing with {max_workers} workers...{Style.RESET_ALL}")
+        update_progress()
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(process_item, f): f for f in image_files}
@@ -1131,9 +1385,7 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
                     processed_count += 1
                     total_output_size += res["new_size_kb"]
                     
-                    # Log to file (safe as we just append locally then aggregate? 
-                    # actually we need to write to log_data. 
-                    # log_data is massive dict. Doing it here in main thread is safe.
+                    # Log to data structure
                     entry = res["log_entry"]
                     variant_name = size_variants[0]["name"] or "default"
                     if variant_name not in log_data["processing"]["images"]:
@@ -1146,20 +1398,33 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
                     elif action == "downscaled": log_data["processing"]["stats"]["downscaled_count"] += 1
                     else: log_data["processing"]["stats"]["kept_original_size"] += 1
                     
-                    # Print terminal output for this image
-                    print(f"\n{Fore.CYAN}[RUN] Processing: {filename}")
-                    print(res["terminal_output"])
+                    # Print terminal output for this image (Scrolls up above the bar)
+                    if mode != "Watch":
+                        # Clear bar line, print result, then update_progress will redraw bar at bottom
+                        sys.stdout.write("\r" + " " * 100 + "\r")
+                        print(res["terminal_output"])
+                        update_progress()
                     
                 else:
                     skipped_count += 1
                     log_data["processing"]["stats"]["total_skipped"] += 1
-                    print(f"\n{Fore.RED}[RUN] Skipping: {filename} - {res.get('reason', 'Unknown error')}")
+                    if mode != "Watch":
+                        sys.stdout.write("\r" + " " * 100 + "\r")
+                        print(f"{Fore.RED}[SKIP] {filename:<30} | {res.get('reason', 'Unknown error')}")
+                        update_progress()
             except Exception as exc:
                 skipped_count += 1
                 log_data["processing"]["stats"]["total_skipped"] += 1
-                print(f"\n{Fore.RED}[RUN] Skipping: {filename} - Generated an exception: {exc}")
+                if mode != "Watch":
+                    sys.stdout.write("\r" + " " * 100 + "\r")
+                    print(f"{Fore.RED}[ERR]  {filename:<30} | {exc}")
+                    update_progress()
     
-    print() # Newline after progress bar
+    # Save Delta Cache
+    DeltaSync.save_cache(delta_cache)
+    
+    if mode != "Watch":
+        print() # Move to new line after progress finished
     
     # === Results ===
     processing_time = round(time.time() - start_processing_time, 2)
@@ -1169,7 +1434,8 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
     save_final_log(log_data, settings_path, processing_time, total_input_mb, total_output_size)
     stats = log_data["processing"]["stats"]
     
-    print(f"""
+    if mode != "Watch":
+        print(f"""
 {Fore.GREEN}{Style.BRIGHT}Processing Complete!{Style.RESET_ALL}
 {Fore.CYAN}Session Results:
   • Images processed: {processed_count}
@@ -1187,11 +1453,15 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
 {Fore.MAGENTA}Output Location: {output_folder}
 Detailed logs saved: processing_settings.json & processing_settings_summary.txt
 """)
+    else:
+         print(f"{Fore.GREEN}[WATCH] Image processed successfully ({processing_time}s)")
     
     # Open output folder
     if is_test:
         print(f"{Fore.GREEN}[TEST] Test image saved to: {output_folder}")
         open_file_cross_platform(output_folder)
+    elif mode == "Watch":
+        pass # Never auto-open in watch mode
     elif input(f"\n{Fore.CYAN}Open output folder? (y/n) [default y]: ").strip().lower() in ('', 'y'):
         open_file_cross_platform(output_folder)
     
@@ -1202,9 +1472,174 @@ Detailed logs saved: processing_settings.json & processing_settings_summary.txt
     
     print(f"{Fore.YELLOW}Thanks for using TerminallyQuick!")
 
+
+
+# === DeltaSync Engine ===
+class DeltaSync:
+    CACHE_FILE = ".tq_sync"
+
+    @staticmethod
+    def get_hash(filepath, settings):
+        """Generate MD5 hash of file content + settings configuration"""
+        try:
+            hasher = hashlib.md5()
+            # File content (read in 64kb chunks)
+            with open(filepath, 'rb') as f:
+                while chunk := f.read(65536):
+                    hasher.update(chunk)
+            
+            # Mix in settings (convert to sorted string for stability)
+            # We exclude keys that don't affect the image pixels/size to avoid cache misses on metadata changes (like rename?)
+            # But name is not in settings passed here usually.
+            # We must be careful about transient settings. 
+            # Current 'settings' dict seems stable.
+            settings_str = json.dumps(settings, sort_keys=True)
+            hasher.update(settings_str.encode('utf-8'))
+            
+            return hasher.hexdigest()
+        except Exception:
+            return None
+
+    @staticmethod
+    def load_cache():
+        if os.path.exists(DeltaSync.CACHE_FILE):
+            try:
+                with open(DeltaSync.CACHE_FILE, 'r') as f:
+                    return json.load(f)
+            except:
+                return {}
+        return {}
+
+    @staticmethod
+    def save_cache(cache):
+        try:
+            with open(DeltaSync.CACHE_FILE, 'w') as f:
+                json.dump(cache, f, indent=2)
+        except:
+            pass
+
+def calculate_rms_diff(img1, img2):
+    """Calculate RMS difference between two images"""
+    try:
+        # Ensure same mode/size for comparison
+        if img1.mode != img2.mode:
+            img2 = img2.convert(img1.mode)
+        if img1.size != img2.size:
+            img2 = img2.resize(img1.size, Image.NEAREST)
+            
+        diff_img = ImageChops.difference(img1, img2)
+        stat = ImageStat.Stat(diff_img)
+        # RMS of differences
+        sum_rms = sum(stat.rms) / len(stat.rms)
+        return sum_rms
+    except:
+        return 999.0 # High difference on error
+
+# === Watchdog Handler ===
+if HAS_WATCHDOG:
+    class TQWatchHandler(FileSystemEventHandler):
+        def __init__(self, settings, session_id, input_folder):
+            self.settings = settings
+            self.session_id = session_id
+            self.input_folder = input_folder
+            self.output_dir = os.path.join('resized_images', session_id)
+            if not os.path.exists(self.output_dir):
+                os.makedirs(self.output_dir, exist_ok=True)
+            print(f"{Fore.GREEN}[WATCH] Active! Monitoring 'input_images/' for new files...")
+            print(f"{Fore.GREEN}[WATCH] Output: {self.output_dir}")
+            print(f"{Fore.YELLOW}[INFO] Press Ctrl+C to stop watching.")
+
+        def on_created(self, event):
+            if event.is_directory: return
+            filename = os.path.basename(event.src_path)
+            if filename.startswith('.'): return # Ignore hidden files
+            
+            # Wait briefly for file write to complete
+            time.sleep(1.0) 
+            
+            # Basic validation
+            ext = os.path.splitext(filename)[1].lower()
+            if ext in ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.tif', '.heic', '.avif', '.cr3', '.ico', '.ppm', '.pgm', '.pbm', '.tga']:
+                print(f"\n{Fore.CYAN}[WATCH] Detected: {filename}")
+                
+                # We need to process this single file. 
+                # Reusing process logic is tricky because process_images expects a batch.
+                # However, we can just call process_images with a single file list in a quiet mode?
+                # Or refactor?
+                # For safety and speed, we will invoke process_images with a single file list, 
+                # but we need to ensure it doesn't print the huge header every time.
+                # Let's just suppress stdout temporarily or add a 'quiet' mode?
+                # Actually, verbose is fine! It shows the user what's happening.
+                
+                # Careful: The event.src_path is absolute. process_images expects RELATIVE to input_folder.
+                # input_folder is 'input_images'.
+                # So we pass ['filename'] and input_folder='input_images'.
+                
+                try:
+                    process_images(self.input_folder, [filename], self.settings, "Watch", custom_output_folder=self.output_dir)
+                    print(f"{Fore.GREEN}[WATCH] Ready for next...")
+                except Exception as e:
+                    print(f"{Fore.RED}[WATCH] Error processing {filename}: {e}")
+
+def run_watchdog_mode(input_folder='input_images'):
+    if not HAS_WATCHDOG:
+        print(f"{Fore.RED}[!] Watchdog library not found. Please run: pip install watchdog")
+        input("Press Enter to return...")
+        return
+
+    print(f"\n{Fore.CYAN}=== Watchdog Mode 🐕 ===")
+    
+    profiles = list_profiles()
+    if profiles:
+        print(f"\n{Fore.GREEN}{Style.BRIGHT}CHOOSE A WATCHDOG PRESET:{Style.RESET_ALL}")
+        for i, profile in enumerate(profiles):
+            print(f"  [{i+1}] Profile: {profile['name']}")
+        print(f"  [M] Manual Configuration (Set custom settings)")
+        print(f"  [B] Back to Main Menu")
+        
+        watch_choice = input(f"\n{Fore.YELLOW}Choice: {Style.RESET_ALL}").strip().lower()
+        if watch_choice == 'b': return
+        
+        if watch_choice == 'm':
+            settings = get_settings()
+        else:
+            try:
+                val = int(watch_choice)
+                if 1 <= val <= len(profiles):
+                    settings = profiles[val-1]['settings']
+                    print(f"{Fore.GREEN}[OK] Using Profile: {profiles[val-1]['name']}")
+                else:
+                    print(f"{Fore.RED}[!] Invalid choice. Switching to manual...")
+                    settings = get_settings()
+            except ValueError:
+                print(f"{Fore.YELLOW}Defaulting to Manual Configuration...")
+                settings = get_settings()
+    else:
+        print(f"{Fore.YELLOW}[INFO] No profiles found. Proceeding with Manual Configuration...")
+        settings = get_settings()
+        
+    if settings == 'back': return
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_id = f"run_WATCHDOG_{timestamp}"
+    
+    event_handler = TQWatchHandler(settings, session_id, input_folder)
+    observer = Observer()
+    observer.schedule(event_handler, path=input_folder, recursive=False)
+    observer.start()
+    
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+        print(f"\n{Fore.YELLOW}[WATCH] Stopping...")
+    observer.join()
+
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
         print(f"\n\n{Fore.YELLOW}[INFO] Session interrupted by user. Quitting gracefully...")
         sys.exit(0)
+

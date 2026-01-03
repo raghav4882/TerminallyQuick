@@ -17,7 +17,7 @@ if [ ! "$(ls -A input_images 2>/dev/null)" ]; then
     echo "Supported formats: PNG, JPEG, WEBP, CR3, BMP, TIFF, and more!" >> input_images/README_ADD_IMAGES_HERE.txt
 fi
 
-echo "[LAUNCH] TerminallyQuick v3.0 - 100% Safe Launcher"
+echo "[LAUNCH] TerminallyQuick v4.0 - 100% Safe Launcher"
 echo "============================================="
 echo "[INFO] This launcher NEVER modifies your system!"
 echo "[INFO] Everything stays within this project folder."
@@ -311,6 +311,20 @@ else
         read -n 1 -s
         exit 1
     fi
+    
+    echo "[INSTALL] Installing pillow-heif (HEIC support)..."
+    if pip install --quiet pillow-heif; then
+        echo "[OK] pillow-heif installed successfully!"
+    else
+        echo "[WARNING] pillow-heif installation failed. input HEIC might not work."
+    fi
+    
+    echo "[INSTALL] Installing watchdog (Watch Mode)..."
+    if pip install --quiet watchdog; then
+        echo "[OK] watchdog installed successfully!"
+    else
+        echo "[WARNING] watchdog installation failed. Watch Mode will be disabled."
+    fi
 fi
 
 # Verify the packages are installed
@@ -367,7 +381,7 @@ echo "[OK] All dependencies ready! Everything is contained in this folder."
 echo ""
 
 # Run the application using the virtual environment Python
-echo "[START] Starting TerminallyQuick v3.0..."
+echo "[START] Starting TerminallyQuick v4.0..."
 echo ""
 
 # Use the virtual environment's Python to ensure dependencies are available
