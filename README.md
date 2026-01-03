@@ -21,6 +21,30 @@ A **high-performance** command-line suite for bulk image optimization, resizing,
     *   **[2] Smart Mode**: Auto-detects optimal settings.
     *   **[4+] Fast Track**: Select a saved Profile to process instantly.
 
+## 📖 Step-by-Step Tutorial
+
+### Your First Session (Manual Mode)
+1.  **Prepare**: Put your photos path in `input_images/`.
+2.  **Start**: Run the launcher. Choose **[1] Manual Configuration**.
+3.  **Settings**:
+    *   Select your **Format** (e.g., WEBP for web).
+    *   Set the **Short Edge** size (e.g., 800px).
+    *   Set **Quality** (typically 80% is the sweet spot).
+4.  **Process**: Watch the parallel engine work! Once finished, a summary report is generated.
+5.  **Save**: The app will ask if you want to save these settings as a **Profile**. Say `Yes` and name it (e.g., "StandardWeb").
+
+### The "Fast Track" Workflow (Pro Speed)
+Once you have saved a profile:
+1.  Run the launcher.
+2.  Your profile will appear in the **FAST TRACK** section (e.g., `[4] Profile: StandardWeb`).
+3.  Press **4**.
+4.  **Done!** Every image in your folder is instantly processed with those exact settings. No questions asked.
+
+### Using the "One-Image Test"
+Unsure about the quality at 70%?
+- In the manual flow, choose **[T] Test Run** before starting the full batch.
+- The app processes only the first image and automatically opens the folder for you to inspect.
+
 ## ⚡ High Performance Workflow
 
 v3.0 introduces a production-grade workflow for large batches:

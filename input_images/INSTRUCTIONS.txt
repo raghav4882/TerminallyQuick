@@ -1,20 +1,22 @@
-Welcome to TerminallyQuick v2.0!
+Welcome to TerminallyQuick v3.0!
 
-This is your default input folder.
+This is your default input folder for original images.
 
 HOW TO USE:
-1. Drag and drop your images into this folder.
-2. Run the TerminallyQuick launcher for your OS.
-3. Follow the text prompts to optimize your images.
+1. Drop your images (PNG, JPEG, WEBP, HEIC, CR3, etc.) here.
+2. Run the TerminallyQuick launcher for your OS (.command or .bat).
+3. Follow the on-screen guides to optimize.
+
+NEW IN v3.0:
+- FAST TRACK: Select a saved Profile from the main menu to instantly process.
+- SMART MODE: Let the app suggest optimal settings based on your images.
+- PARALLEL SPEED: High-speed processing using all your CPU cores.
 
 CUSTOM PATHS:
-You can also process images from any other folder by choosing 
-the [C] Change Path option at the start of the application.
-When prompted for a path, you can drag any folder from your 
-desktop into the terminal window.
-
-SUPPORTED FORMATS:
-PNG, JPEG, WEBP, AVIF, HEIC, CR3 (RAW), BMP, TIFF, ICO, PDF.
+You can process images from ANY folder by choosing [C] Change Path. 
+TIP: You can drag-and-drop any folder from your desktop into the 
+terminal window when prompted for a path.
 
 ---
-TerminallyQuick - Fast image optimization.
+TerminallyQuick - High Performance Image Optimization Suit
+v3.0 Production Release
