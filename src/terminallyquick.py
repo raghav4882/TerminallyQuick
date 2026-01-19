@@ -1023,7 +1023,8 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
     log_data, settings_path = setup_logging(output_folder, settings, mode)
     
     # === Pre-Process Analysis ===
-    print(f"\n{Fore.YELLOW}[INFO] Analyzing batch requirements...{Style.RESET_ALL}")
+    if mode != "Watch":
+        print(f"\n{Fore.YELLOW}[INFO] Analyzing batch requirements...{Style.RESET_ALL}")
     analysis = {"downscale": 0, "upscale": 0, "keep": 0, "failed": 0}
     
     for fname in image_files:
@@ -1453,8 +1454,14 @@ def process_images(input_folder, image_files, settings, mode, is_test=False, cus
 {Fore.MAGENTA}Output Location: {output_folder}
 Detailed logs saved: processing_settings.json & processing_settings_summary.txt
 """)
+    if mode == "Watch":
+        if processed_count > 0:
+            sys.stdout.write(f"{Fore.GREEN}done ({processing_time}s)\n")
+        else:
+            sys.stdout.write(f"{Fore.RED}failed\n")
+        sys.stdout.flush()
     else:
-         print(f"{Fore.GREEN}[WATCH] Image processed successfully ({processing_time}s)")
+        print(f"{Fore.GREEN}[OK] Image processed successfully ({processing_time}s)")
     
     # Open output folder
     if is_test:
@@ -1470,7 +1477,8 @@ Detailed logs saved: processing_settings.json & processing_settings_summary.txt
     if os.path.exists(temp_cr3_folder):
         shutil.rmtree(temp_cr3_folder)
     
-    print(f"{Fore.YELLOW}Thanks for using TerminallyQuick!")
+    if mode != "Watch":
+        print(f"{Fore.YELLOW}Thanks for using TerminallyQuick!")
 
 
 
@@ -1560,7 +1568,8 @@ if HAS_WATCHDOG:
             # Basic validation
             ext = os.path.splitext(filename)[1].lower()
             if ext in ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.tif', '.heic', '.avif', '.cr3', '.ico', '.ppm', '.pgm', '.pbm', '.tga']:
-                print(f"\n{Fore.CYAN}[WATCH] Detected: {filename}")
+                sys.stdout.write(f"\n{Fore.CYAN}[WATCH] Detected: {filename} ..... ")
+                sys.stdout.flush()
                 
                 # We need to process this single file. 
                 # Reusing process logic is tricky because process_images expects a batch.
@@ -1577,7 +1586,6 @@ if HAS_WATCHDOG:
                 
                 try:
                     process_images(self.input_folder, [filename], self.settings, "Watch", custom_output_folder=self.output_dir)
-                    print(f"{Fore.GREEN}[WATCH] Ready for next...")
                 except Exception as e:
                     print(f"{Fore.RED}[WATCH] Error processing {filename}: {e}")
 
